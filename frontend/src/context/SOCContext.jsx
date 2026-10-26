@@ -44,6 +44,11 @@ export const SOCProvider = ({ children }) => {
   const [alerts, setAlerts] = useState([]);
   const [firewallRules, setFirewallRules] = useState([]);
   const [systemLogs, setSystemLogs] = useState([]);
+  const [responseActions, setResponseActions] = useState([]);
+  const [riskAssessments, setRiskAssessments] = useState([]);
+  const [responseConfig, setResponseConfig] = useState(null);
+  const [aiModelStatus, setAiModelStatus] = useState(null);
+
 
   // ============================================================
   // TOASTS
@@ -267,58 +272,66 @@ export const SOCProvider = ({ children }) => {
         fwData,
         alertsData,
         logsData,
-        packetsData
+        packetsData,
+        actionsData,
+        cfgData,
+        aiData,
+        risksData
       ] = await Promise.allSettled([
         apiClient.getThreats(100),
         apiClient.getFirewallRules(),
         apiClient.getAlerts(20),
         apiClient.getSystemLogs(50),
-        apiClient.getPackets(100)
+        apiClient.getPackets(100),
+        apiClient.getResponseActions(50),
+        apiClient.getResponseSystemConfig(),
+        apiClient.getAiModelStatus(),
+        apiClient.getRiskAssessments(30)
       ]);
 
-      if (
-        threatsData.status === 'fulfilled' &&
-        threatsData.value
-      ) {
+      if (threatsData.status === 'fulfilled' && threatsData.value) {
         setThreats(threatsData.value);
       }
 
-      if (
-        fwData.status === 'fulfilled' &&
-        fwData.value
-      ) {
+      if (fwData.status === 'fulfilled' && fwData.value) {
         setFirewallRules(fwData.value);
       }
 
-      if (
-        alertsData.status === 'fulfilled' &&
-        alertsData.value
-      ) {
+      if (alertsData.status === 'fulfilled' && alertsData.value) {
         setAlerts(alertsData.value);
       }
 
-      if (
-        logsData.status === 'fulfilled' &&
-        logsData.value
-      ) {
+      if (logsData.status === 'fulfilled' && logsData.value) {
         setSystemLogs(logsData.value);
       }
 
-      if (
-        packetsData.status === 'fulfilled' &&
-        packetsData.value
-      ) {
+      if (packetsData.status === 'fulfilled' && packetsData.value) {
         setLivePackets((prev) =>
-          prev.length === 0
-            ? packetsData.value
-            : prev
+          prev.length === 0 ? packetsData.value : prev
         );
+      }
+
+      if (actionsData.status === 'fulfilled' && actionsData.value) {
+        setResponseActions(actionsData.value);
+      }
+
+      if (cfgData.status === 'fulfilled' && cfgData.value) {
+        setResponseConfig(cfgData.value);
+      }
+
+      if (aiData.status === 'fulfilled' && aiData.value) {
+        setAiModelStatus(aiData.value);
+      }
+
+      if (risksData.status === 'fulfilled' && risksData.value) {
+        setRiskAssessments(risksData.value);
       }
     } catch (error) {
       console.error(
         '[SecureNet AI] Failed to refresh persisted data:',
         error
       );
+
     }
   }, []);
 
@@ -799,6 +812,10 @@ export const SOCProvider = ({ children }) => {
     alerts,
     firewallRules,
     systemLogs,
+    responseActions,
+    riskAssessments,
+    responseConfig,
+    aiModelStatus,
 
     // Toasts
     toasts,
@@ -818,12 +835,38 @@ export const SOCProvider = ({ children }) => {
     unblockIp: handleUnblockIp,
     setFilterMode: handleSetFilterMode,
     resetSession: handleResetSession,
+    approveAction: async (id) => {
+      const res = await apiClient.approveResponseAction(id);
+      await refreshPersistedData();
+      return res;
+    },
+    rejectAction: async (id) => {
+      const res = await apiClient.rejectResponseAction(id);
+      await refreshPersistedData();
+      return res;
+    },
+    rollbackAction: async (id) => {
+      const res = await apiClient.rollbackResponseAction(id);
+      await refreshPersistedData();
+      return res;
+    },
+    executeManualResponse: async (target_ip, reason, duration = 3600) => {
+      const res = await apiClient.executeManualResponse(target_ip, reason, duration);
+      await refreshPersistedData();
+      return res;
+    },
+    updateResponseConfig: async (configs) => {
+      const res = await apiClient.updateResponseSystemConfig(configs);
+      await refreshPersistedData();
+      return res;
+    },
 
     // Refresh
     refreshPersistedData,
     fetchTelemetry,
     retryConnection
   };
+
 
   // ============================================================
   // PROVIDER

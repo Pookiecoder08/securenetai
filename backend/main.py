@@ -25,7 +25,19 @@ from datetime import datetime
 from typing import List, Dict, Any, Optional
 
 import psutil
-from fastapi import FastAPI, Depends, HTTPException, WebSocket, WebSocketDisconnect, Query, Request, status
+from fastapi import (
+    FastAPI,
+    Depends,
+    HTTPException,
+    WebSocket,
+    WebSocketDisconnect,
+    Query,
+    Request,
+    status,
+    UploadFile,
+    File,
+    BackgroundTasks
+)
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import StreamingResponse, JSONResponse
 from fastapi.security import OAuth2PasswordRequestForm
@@ -39,12 +51,33 @@ from scapy.packet import Raw
 
 # Project imports
 from database import get_db, init_db, SessionLocal, seed_default_topology, purge_packet_logs
-from models import User, PacketLog, FirewallRule, TopologyState
+from models import (
+    User,
+    PacketLog,
+    FirewallRule,
+    TopologyState,
+    SecurityEvent,
+    ThreatDetection,
+    AIAnalysis,
+    RiskAssessment,
+    ResponsePolicy,
+    ResponseAction,
+    AuditLog,
+    SystemConfig,
+)
 from security import verify_password, create_access_token, SECRET_KEY, ALGORITHM
 from auth import get_current_user, require_role
 import firewall
 import reports
+from nids_service import NIDSIngestionPipeline, EveJsonParser, ThreatClassifier
+from ml_service import ml_detector, FeatureExtractor, MODEL_FILE, METADATA_FILE
+from risk_and_response_service import (
+    RiskScoringEngine,
+    ResponsePolicyEngine,
+    ResponseExecutionManager,
+)
 from jose import jwt, JWTError
+
 
 app = FastAPI(
     title="SecureNet AI — Enterprise NIDS/NIPS Engine",
@@ -339,22 +372,84 @@ def process_packet_bytes(raw_data: bytes):
     direction = "inbound" if (dst_ip == host_ip or not host_ip) else "outbound"
 
     packet_counter += 1
+    risk_score_val = 0
+    risk_band_val = "Low"
+    ai_anomaly_val = 0
+    response_outcome = "MONITOR"
+
     if is_threat:
         threat_counter += 1
         if severity == "Critical":
             critical_threat_counter += 1
         print(f"\n[ALERT - THREAT DETECTED] Signature: {threat_type} | Severity: {severity} | {src_ip}:{src_port} -> {dst_ip}:{dst_port}")
         
-        # Active Defense: Auto-trigger OS kernel firewall drop rule targeting external attacker
         target_block_ip = src_ip if (src_ip and src_ip != host_ip) else (src_ip or "127.0.0.1")
-        if target_block_ip:
-            with SessionLocal() as db_session:
-                firewall.block_ip(
-                    ip=target_block_ip,
-                    reason=threat_type or "Automated Threat Detection",
-                    blocked_by="AUTOMATED_NIPS",
-                    db=db_session
+        
+        # 1. AI Behavioral Anomaly Analysis on target host
+        features = FeatureExtractor.extract_from_packets([
+            {
+                "src_ip": src_ip,
+                "dst_ip": dst_ip,
+                "dst_port": dst_port,
+                "length": len(raw_data),
+                "protocol": protocol,
+                "direction": direction,
+                "payload_ascii": payload_ascii
+            }
+        ], host_ip=target_block_ip)
+        ai_result = ml_detector.analyze_host_traffic(target_block_ip, features)
+        ai_anomaly_val = ai_result.get("anomaly_score", 40)
+
+        with SessionLocal() as db_session:
+            # 2. Persist ThreatDetection entity
+            threat_rec = ThreatDetection(
+                timestamp=datetime.utcnow(),
+                src_ip=src_ip,
+                dst_ip=dst_ip,
+                src_port=src_port,
+                dst_port=dst_port,
+                protocol=protocol,
+                attack_category=threat_type or "Intrusion Attempt",
+                severity=severity or "High",
+                confidence=90 if severity == "Critical" else 80,
+                evidence=f"Signature match '{threat_type}' on port {dst_port}. AI Anomaly Score: {ai_anomaly_val}/100.",
+                status="OPEN"
+            )
+            db_session.add(threat_rec)
+            db_session.flush()
+
+            # 3. Calculate Explainable Risk Score
+            risk_res = RiskScoringEngine.assess_and_record(
+                db=db_session,
+                threat=threat_rec,
+                ai_anomaly_score=ai_anomaly_val,
+                target_ip=dst_ip,
+                src_ip=target_block_ip
+            )
+            risk_score_val = risk_res.risk_score
+            risk_band_val = risk_res.risk_band
+
+            # 4. Evaluate Response Policy & Safety Allowlists
+            decision = ResponsePolicyEngine.evaluate_response_decision(
+                db=db_session,
+                risk_assessment=risk_res,
+                threat=threat_rec
+            )
+            response_outcome = decision.get("status", "SIMULATED")
+
+            # 5. Execute Authorized Automated or Simulated Action
+            if decision.get("is_eligible") and decision.get("action_type") == "BLOCK":
+                ResponseExecutionManager.execute_response(
+                    db=db_session,
+                    target_ip=target_block_ip,
+                    reason=threat_type or "Automated Threat Mitigation",
+                    actor="AUTOMATED_NIPS",
+                    risk_assessment_id=risk_res.id,
+                    threat_id=threat_rec.id,
+                    duration_seconds=decision.get("duration_seconds", 3600),
+                    policy_name=decision.get("policy_name")
                 )
+
 
     packet_dict = {
         "id": packet_counter,
@@ -369,6 +464,10 @@ def process_packet_bytes(raw_data: bytes):
         "is_threat": is_threat,
         "threat_type": threat_type,
         "severity": severity,
+        "risk_score": risk_score_val,
+        "risk_band": risk_band_val,
+        "ai_anomaly_score": ai_anomaly_val,
+        "response_status": response_outcome,
         "payload_hex": payload_hex,
         "payload_ascii": payload_ascii
     }
@@ -631,7 +730,22 @@ async def startup_event():
         daemon=True
     )
     sniffer_thread.start()
-    print("[SecureNet AI System] Sniffer and async queue broadcaster active.\n")
+
+    # 6. Start Response TTL Expiration Worker daemon
+    def ttl_expiry_worker():
+        while True:
+            try:
+                with SessionLocal() as db_session:
+                    ResponseExecutionManager.check_expired_actions(db_session)
+            except Exception:
+                pass
+            time.sleep(30)
+
+    ttl_thread = threading.Thread(target=ttl_expiry_worker, daemon=True)
+    ttl_thread.start()
+
+    print("[SecureNet AI System] Sniffer, TTL expiry worker, and async broadcaster active.\n")
+
 
 
 # -----------------------------------------------------------------------------
@@ -754,7 +868,44 @@ class FilterModePayload(BaseModel):
     mode: str  # 'soc_filtered', 'targeted', or 'raw_all'
 
 
+class NidsEventIngestPayload(BaseModel):
+    events: List[Dict[str, Any]]
+    sensor_id: Optional[str] = "suricata-sensor-01"
+
+
+class ThreatStatusUpdate(BaseModel):
+    status: str  # OPEN, INVESTIGATING, MITIGATED, RESOLVED, FALSE_POSITIVE
+    notes: Optional[str] = None
+
+
+class AIAnalyzeHostPayload(BaseModel):
+    target_ip: str
+
+
+class PolicyPayload(BaseModel):
+    name: str
+    description: Optional[str] = None
+    min_risk_score: int = 70
+    severity_threshold: str = "High"
+    action_type: str = "RECOMMEND"  # MONITOR, ALERT, RECOMMEND, REQUIRE_APPROVAL, AUTO_BLOCK
+    duration_seconds: int = 3600
+    is_enabled: bool = True
+    allowlist_ips: Optional[str] = None
+
+
+class ManualResponsePayload(BaseModel):
+    target_ip: str
+    action_type: str = "BLOCK"
+    reason: str
+    duration_seconds: int = 3600
+
+
+class SystemConfigUpdatePayload(BaseModel):
+    configs: Dict[str, str]
+
+
 def serialize_packet_log(record: PacketLog) -> Dict[str, Any]:
+
     """Return a frontend-safe representation of a persisted packet record."""
     severity = ""
     if record.is_threat:
@@ -1046,17 +1197,38 @@ async def get_system_status(
     """Returns runtime telemetry on active adapter, sniffer state, and firewall platform."""
     fw_info = firewall.get_platform_info()
     active_rule_count = db.query(FirewallRule).filter(FirewallRule.is_active == True).count()
+    total_sec_events = db.query(SecurityEvent).count()
+    total_threat_detections = db.query(ThreatDetection).count()
+    pending_decisions = db.query(ResponseAction).filter(ResponseAction.status == "PENDING_APPROVAL").count()
+    active_restrictions = db.query(ResponseAction).filter(ResponseAction.status.in_(["EXECUTED", "SIMULATED"])).count()
+    sim_mode = ResponsePolicyEngine.get_system_config(db, "simulation_mode", "true").lower() == "true"
+    real_auth = ResponsePolicyEngine.get_system_config(db, "real_enforcement_authorized", "false").lower() == "true"
+
+    # Distinct active devices observed in persisted telemetry
+    recent_devices = db.query(PacketLog.src_ip).distinct().limit(50).all()
+    devices_count = max(len(recent_devices), 1)
+
     return {
         "adapter": selected_interface_info,
         "sniffer_running": sniffer_running,
         "total_packets_captured": packet_counter,
         "total_threats_detected": threat_counter,
         "critical_threats_detected": critical_threat_counter,
+        "total_security_events": total_sec_events,
+        "total_threat_detections": total_threat_detections,
         "active_firewall_rules_count": active_rule_count,
+        "pending_response_decisions_count": pending_decisions,
+        "active_restrictions_count": active_restrictions,
+        "simulation_mode": sim_mode,
+        "real_enforcement_authorized": real_auth,
+        "ai_model_loaded": ml_detector.is_loaded,
+        "ai_model_version": ml_detector.metadata.get("version", "1.0.0"),
+        "recent_devices_count": devices_count,
         "capture_filter_mode": capture_filter_mode,
         "firewall_platform": fw_info["os"],
         "firewall_driver": fw_info["driver"]
     }
+
 
 
 @app.post("/api/system/filter-mode")
@@ -1155,8 +1327,555 @@ async def inject_threat_packet(
 
 
 # -----------------------------------------------------------------------------
+# API Endpoints — NIDS Telemetry Ingestion (Suricata EVE JSON)
+# -----------------------------------------------------------------------------
+@app.post("/api/nids/events/ingest")
+async def ingest_nids_events(
+    payload: NidsEventIngestPayload,
+    current_user: User = Depends(require_role(["admin", "analyst"])),
+    db: Session = Depends(get_db)
+):
+    """
+    Ingests Suricata EVE JSON or standard NIDS events.
+    Performs field normalization, schema validation, deduplication, and automated threat classification.
+    """
+    result = NIDSIngestionPipeline.ingest_batch_events(
+        events_list=payload.events,
+        db=db,
+        sensor_id=payload.sensor_id or "suricata-sensor-01"
+    )
+
+    if result.get("threats_detected", 0) > 0 and packet_async_queue:
+        event_notice = {
+            "type": "NIDS_INGESTION_BATCH",
+            "timestamp": datetime.utcnow().isoformat(),
+            "summary": result
+        }
+        if event_loop and event_loop.is_running():
+            event_loop.call_soon_threadsafe(packet_async_queue.put_nowait, event_notice)
+
+    return result
+
+
+@app.post("/api/nids/eve/upload")
+async def upload_eve_json_file(
+    file: UploadFile = File(...),
+    current_user: User = Depends(require_role(["admin", "analyst"])),
+    db: Session = Depends(get_db)
+):
+    """
+    Uploads and parses a multi-line Suricata EVE JSON file (eve.json).
+    Processes event lines without crashing on malformed lines.
+    """
+    try:
+        content = await file.read()
+        lines = content.decode("utf-8", errors="ignore").splitlines()
+        events = []
+        for line in lines:
+            line_s = line.strip()
+            if line_s:
+                try:
+                    events.append(json.loads(line_s))
+                except Exception:
+                    pass
+
+        if not events:
+            raise HTTPException(status_code=400, detail="No valid JSON lines could be parsed from the provided file.")
+
+        return NIDSIngestionPipeline.ingest_batch_events(events_list=events, db=db)
+    except HTTPException:
+        raise
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"File ingestion error: {str(e)}")
+
+
+@app.get("/api/nids/events")
+async def get_nids_events(
+    limit: int = Query(50, ge=1, le=500),
+    event_type: Optional[str] = Query(None),
+    severity: Optional[int] = Query(None),
+    current_user: User = Depends(get_current_user),
+    db: Session = Depends(get_db)
+):
+    """Returns parsed and normalized NIDS security events."""
+    query = db.query(SecurityEvent)
+    if event_type:
+        query = query.filter(SecurityEvent.event_type == event_type.lower())
+    if severity is not None:
+        query = query.filter(SecurityEvent.severity == severity)
+    records = query.order_by(SecurityEvent.timestamp.desc()).limit(limit).all()
+    return [
+        {
+            "id": r.id,
+            "event_id": r.event_id,
+            "sensor_id": r.sensor_id,
+            "event_type": r.event_type,
+            "timestamp": r.timestamp.isoformat(),
+            "src_ip": r.src_ip,
+            "src_port": r.src_port,
+            "dst_ip": r.dst_ip,
+            "dst_port": r.dst_port,
+            "protocol": r.protocol,
+            "signature": r.signature,
+            "category": r.category,
+            "severity": r.severity,
+            "flow_id": r.flow_id
+        }
+        for r in records
+    ]
+
+
+@app.get("/api/nids/sensor/status")
+async def get_sensor_status(
+    current_user: User = Depends(get_current_user),
+    db: Session = Depends(get_db)
+):
+    """Returns sensor operational status, ingested counts, and active capture mode."""
+    total_sec_events = db.query(SecurityEvent).count()
+    total_threat_detections = db.query(ThreatDetection).count()
+    sensor_cfg = ResponsePolicyEngine.get_system_config(db, "nids_sensor_status", "ACTIVE")
+    return {
+        "sensor_id": "suricata-sensor-01",
+        "status": sensor_cfg if sniffer_running else "WAITING_FOR_TELEMETRY",
+        "sniffer_running": sniffer_running,
+        "adapter": selected_interface_info,
+        "total_security_events": total_sec_events,
+        "total_threat_detections": total_threat_detections,
+        "filter_mode": capture_filter_mode
+    }
+
+
+# -----------------------------------------------------------------------------
+# API Endpoints — Threat Detections & AI Behavioral Analysis
+# -----------------------------------------------------------------------------
+@app.get("/api/threats/detections")
+async def get_threat_detections(
+    limit: int = Query(50, ge=1, le=200),
+    status: Optional[str] = Query(None),
+    category: Optional[str] = Query(None),
+    current_user: User = Depends(get_current_user),
+    db: Session = Depends(get_db)
+):
+    """Returns classified ThreatDetection records with investigation status and risk score context."""
+    query = db.query(ThreatDetection)
+    if status:
+        query = query.filter(ThreatDetection.status == status.upper())
+    if category:
+        query = query.filter(ThreatDetection.attack_category.ilike(f"%{category}%"))
+    records = query.order_by(ThreatDetection.timestamp.desc()).limit(limit).all()
+
+    results = []
+    for r in records:
+        risk = db.query(RiskAssessment).filter(RiskAssessment.threat_id == r.id).first()
+        results.append({
+            "id": r.id,
+            "event_id": r.event_id,
+            "timestamp": r.timestamp.isoformat(),
+            "src_ip": r.src_ip,
+            "dst_ip": r.dst_ip,
+            "src_port": r.src_port,
+            "dst_port": r.dst_port,
+            "protocol": r.protocol,
+            "attack_category": r.attack_category,
+            "severity": r.severity,
+            "confidence": r.confidence,
+            "evidence": r.evidence,
+            "status": r.status,
+            "assigned_to": r.assigned_to,
+            "risk_score": risk.risk_score if risk else (80 if r.severity == "Critical" else 65),
+            "risk_band": risk.risk_band if risk else ("Critical" if r.severity == "Critical" else "High"),
+            "notes": r.notes
+        })
+    return results
+
+
+@app.patch("/api/threats/{threat_id}/status")
+async def update_threat_status(
+    threat_id: int,
+    payload: ThreatStatusUpdate,
+    current_user: User = Depends(require_role(["admin", "analyst"])),
+    db: Session = Depends(get_db)
+):
+    """Updates investigation workflow status (OPEN, INVESTIGATING, MITIGATED, RESOLVED, FALSE_POSITIVE)."""
+    t = db.query(ThreatDetection).filter(ThreatDetection.id == threat_id).first()
+    if not t:
+        raise HTTPException(status_code=404, detail="Threat detection not found")
+    t.status = payload.status.upper()
+    if payload.notes:
+        t.notes = payload.notes
+    t.assigned_to = current_user.username
+    db.commit()
+    return {"message": f"Threat #{threat_id} updated to {t.status}", "status": t.status}
+
+
+@app.get("/api/ai/status")
+async def get_ai_model_status(current_user: User = Depends(get_current_user)):
+    """Returns machine learning model metadata, version, and training evaluation metrics."""
+    metadata = {}
+    if os.path.exists(METADATA_FILE):
+        try:
+            with open(METADATA_FILE, "r") as f:
+                metadata = json.load(f)
+        except Exception:
+            pass
+    return {
+        "model_loaded": ml_detector.is_loaded,
+        "model_name": "IsolationForest",
+        "model_version": metadata.get("version", "1.0.0"),
+        "trained_at": metadata.get("trained_at"),
+        "training_samples": metadata.get("training_samples", 0),
+        "evaluation_results": metadata.get("evaluation_results", {}),
+        "features": metadata.get("features", []),
+        "status": metadata.get("status", "UNINITIALIZED" if not ml_detector.is_loaded else "READY")
+    }
+
+
+@app.post("/api/ai/analyze-host")
+async def analyze_host_traffic_endpoint(
+    payload: AIAnalyzeHostPayload,
+    current_user: User = Depends(get_current_user),
+    db: Session = Depends(get_db)
+):
+    """Extracts genuine network flow features for target IP and returns Isolation Forest anomaly inference."""
+    records = db.query(PacketLog).filter(
+        (PacketLog.src_ip == payload.target_ip) | (PacketLog.dst_ip == payload.target_ip)
+    ).order_by(PacketLog.timestamp.desc()).limit(100).all()
+
+    packets = [
+        {
+            "src_ip": r.src_ip,
+            "dst_ip": r.dst_ip,
+            "dst_port": r.dst_port,
+            "length": 128,
+            "protocol": r.protocol,
+            "direction": "outbound" if r.src_ip == payload.target_ip else "inbound",
+            "payload_ascii": r.payload_sample or ""
+        }
+        for r in records
+    ]
+
+    features = FeatureExtractor.extract_from_packets(packets, host_ip=payload.target_ip)
+    analysis = ml_detector.analyze_host_traffic(payload.target_ip, features)
+
+    rec = AIAnalysis(
+        target_ip=payload.target_ip,
+        model_name="IsolationForest",
+        model_version=analysis.get("model_version", "1.0.0"),
+        anomaly_score=analysis.get("anomaly_score", 0),
+        raw_decision_score=str(analysis.get("raw_decision_score", 0.0)),
+        is_anomaly=analysis.get("is_anomaly", False),
+        features_json=json.dumps(features),
+        explanation=analysis.get("explanation"),
+        limitations=analysis.get("limitations")
+    )
+    db.add(rec)
+    db.commit()
+
+    return analysis
+
+
+# -----------------------------------------------------------------------------
+# API Endpoints — Risk Scoring & Response Engine
+# -----------------------------------------------------------------------------
+@app.get("/api/risk/assessments")
+async def get_risk_assessments(
+    limit: int = Query(30, ge=1, le=100),
+    current_user: User = Depends(get_current_user),
+    db: Session = Depends(get_db)
+):
+    """Returns recent multi-factor risk assessments with factor breakdowns."""
+    records = db.query(RiskAssessment).order_by(RiskAssessment.timestamp.desc()).limit(limit).all()
+    return [
+        {
+            "id": r.id,
+            "threat_id": r.threat_id,
+            "src_ip": r.src_ip,
+            "timestamp": r.timestamp.isoformat(),
+            "risk_score": r.risk_score,
+            "risk_band": r.risk_band,
+            "contributing_factors": json.loads(r.contributing_factors_json) if r.contributing_factors_json else {},
+            "policy_version": r.policy_version,
+            "explanation": r.explanation
+        }
+        for r in records
+    ]
+
+
+@app.get("/api/response/policies")
+async def get_response_policies(
+    current_user: User = Depends(get_current_user),
+    db: Session = Depends(get_db)
+):
+    """Lists configured automated response policies."""
+    policies = db.query(ResponsePolicy).order_by(ResponsePolicy.min_risk_score.desc()).all()
+    return [
+        {
+            "id": p.id,
+            "name": p.name,
+            "description": p.description,
+            "min_risk_score": p.min_risk_score,
+            "severity_threshold": p.severity_threshold,
+            "action_type": p.action_type,
+            "duration_seconds": p.duration_seconds,
+            "is_enabled": p.is_enabled,
+            "allowlist_ips": p.allowlist_ips
+        }
+        for p in policies
+    ]
+
+
+@app.post("/api/response/policies")
+async def create_or_update_policy(
+    payload: PolicyPayload,
+    current_user: User = Depends(require_role(["admin"])),
+    db: Session = Depends(get_db)
+):
+    """Admin-only endpoint to create or update an automated response policy."""
+    policy = db.query(ResponsePolicy).filter(ResponsePolicy.name == payload.name).first()
+    if policy:
+        policy.description = payload.description or policy.description
+        policy.min_risk_score = payload.min_risk_score
+        policy.severity_threshold = payload.severity_threshold
+        policy.action_type = payload.action_type
+        policy.duration_seconds = payload.duration_seconds
+        policy.is_enabled = payload.is_enabled
+        if payload.allowlist_ips:
+            policy.allowlist_ips = payload.allowlist_ips
+        policy.updated_at = datetime.utcnow()
+    else:
+        policy = ResponsePolicy(
+            name=payload.name,
+            description=payload.description,
+            min_risk_score=payload.min_risk_score,
+            severity_threshold=payload.severity_threshold,
+            action_type=payload.action_type,
+            duration_seconds=payload.duration_seconds,
+            is_enabled=payload.is_enabled,
+            allowlist_ips=payload.allowlist_ips or "127.0.0.1,10.0.0.1,192.168.1.1,8.8.8.8,1.1.1.1"
+        )
+        db.add(policy)
+
+    db.add(AuditLog(
+        actor=current_user.username,
+        action="CONFIG_RESPONSE_POLICY",
+        target=payload.name,
+        details=f"Policy {payload.name} configured with min risk score {payload.min_risk_score} and action {payload.action_type}.",
+        status="SUCCESS"
+    ))
+    db.commit()
+    return {"message": f"Policy '{payload.name}' saved successfully."}
+
+
+@app.get("/api/response/actions")
+async def get_response_actions(
+    limit: int = Query(50, ge=1, le=200),
+    status: Optional[str] = Query(None),
+    current_user: User = Depends(get_current_user),
+    db: Session = Depends(get_db)
+):
+    """Returns historical and active response actions (simulated vs real, pending, expired, reversed)."""
+    query = db.query(ResponseAction)
+    if status:
+        query = query.filter(ResponseAction.status == status.upper())
+    records = query.order_by(ResponseAction.created_at.desc()).limit(limit).all()
+    return [
+        {
+            "id": r.id,
+            "risk_assessment_id": r.risk_assessment_id,
+            "threat_id": r.threat_id,
+            "target_ip": r.target_ip,
+            "action_type": r.action_type,
+            "status": r.status,
+            "is_simulated": r.is_simulated,
+            "reason": r.reason,
+            "initiated_by": r.initiated_by,
+            "policy_name": r.policy_name,
+            "created_at": r.created_at.isoformat(),
+            "executed_at": r.executed_at.isoformat() if r.executed_at else None,
+            "expires_at": r.expires_at.isoformat() if r.expires_at else None,
+            "reversed_at": r.reversed_at.isoformat() if r.reversed_at else None,
+            "reversed_by": r.reversed_by,
+            "execution_output": r.execution_output
+        }
+        for r in records
+    ]
+
+
+@app.post("/api/response/actions/{action_id}/approve")
+async def approve_response_action(
+    action_id: int,
+    current_user: User = Depends(require_role(["admin"])),
+    db: Session = Depends(get_db)
+):
+    """Admin endpoint to approve and execute a pending response action."""
+    act = db.query(ResponseAction).filter(ResponseAction.id == action_id).first()
+    if not act:
+        raise HTTPException(status_code=404, detail="Response action not found")
+    if act.status != "PENDING_APPROVAL":
+        raise HTTPException(status_code=400, detail=f"Action cannot be approved; status is {act.status}")
+
+    res = ResponseExecutionManager.execute_response(
+        db=db,
+        target_ip=act.target_ip,
+        reason=act.reason,
+        actor=f"ADMIN_{current_user.username.upper()}",
+        risk_assessment_id=act.risk_assessment_id,
+        threat_id=act.threat_id,
+        duration_seconds=3600,
+        policy_name=act.policy_name
+    )
+    act.status = res.get("status", "EXECUTED")
+    act.executed_at = datetime.utcnow()
+    act.initiated_by = current_user.username
+    db.commit()
+    return {"message": f"Action #{action_id} approved and executed.", "result": res}
+
+
+@app.post("/api/response/actions/{action_id}/reject")
+async def reject_response_action(
+    action_id: int,
+    current_user: User = Depends(require_role(["admin", "analyst"])),
+    db: Session = Depends(get_db)
+):
+    """Rejects a pending response action."""
+    act = db.query(ResponseAction).filter(ResponseAction.id == action_id).first()
+    if not act:
+        raise HTTPException(status_code=404, detail="Response action not found")
+    act.status = "REJECTED"
+    db.add(AuditLog(
+        actor=current_user.username,
+        action="REJECT_RESPONSE_ACTION",
+        target=act.target_ip,
+        details=f"ResponseAction #{action_id} rejected by operator {current_user.username}.",
+        status="SUCCESS"
+    ))
+    db.commit()
+    return {"message": f"Action #{action_id} rejected.", "status": "REJECTED"}
+
+
+@app.post("/api/response/actions/{action_id}/rollback")
+async def rollback_response_action(
+    action_id: int,
+    current_user: User = Depends(require_role(["admin", "analyst"])),
+    db: Session = Depends(get_db)
+):
+    """Rolls back an executed or simulated response action (unblocks target)."""
+    res = ResponseExecutionManager.rollback_action(
+        db=db,
+        action_id=action_id,
+        reversed_by=current_user.username
+    )
+    if not res.get("success"):
+        raise HTTPException(status_code=400, detail=res.get("error"))
+    return res
+
+
+@app.post("/api/response/execute-manual")
+async def execute_manual_response(
+    payload: ManualResponsePayload,
+    current_user: User = Depends(require_role(["admin", "analyst"])),
+    db: Session = Depends(get_db)
+):
+    """Executes an authorized manual response with configured duration."""
+    res = ResponseExecutionManager.execute_response(
+        db=db,
+        target_ip=payload.target_ip,
+        reason=payload.reason,
+        actor=current_user.username,
+        duration_seconds=payload.duration_seconds,
+        policy_name="Manual Operator Command"
+    )
+    if not res.get("success"):
+        raise HTTPException(status_code=400, detail=res.get("error"))
+    return res
+
+
+@app.get("/api/response/system-config")
+async def get_response_system_config(
+    current_user: User = Depends(get_current_user),
+    db: Session = Depends(get_db)
+):
+    """Returns runtime response configuration (simulation mode, real enforcement toggle, allowlists)."""
+    configs = db.query(SystemConfig).all()
+    cfg_dict = {c.key: c.value for c in configs}
+    fw_info = firewall.get_platform_info()
+    return {
+        "simulation_mode": cfg_dict.get("simulation_mode", "true").lower() == "true",
+        "real_enforcement_authorized": cfg_dict.get("real_enforcement_authorized", "false").lower() == "true",
+        "allowlist_ips": cfg_dict.get("allowlist_ips", "127.0.0.1,10.0.0.1,192.168.1.1,8.8.8.8,1.1.1.1,10.0.0.50"),
+        "firewall_platform": fw_info["os"],
+        "firewall_driver": fw_info["driver"]
+    }
+
+
+@app.post("/api/response/system-config")
+async def update_response_system_config(
+    payload: SystemConfigUpdatePayload,
+    current_user: User = Depends(require_role(["admin"])),
+    db: Session = Depends(get_db)
+):
+    """Admin-only endpoint to update simulation mode, real enforcement, and allowlists."""
+    for k, v in payload.configs.items():
+        cfg = db.query(SystemConfig).filter(SystemConfig.key == k).first()
+        if cfg:
+            cfg.value = str(v).strip()
+            cfg.updated_at = datetime.utcnow()
+        else:
+            db.add(SystemConfig(key=k, value=str(v).strip()))
+
+    db.add(AuditLog(
+        actor=current_user.username,
+        action="UPDATE_SYSTEM_CONFIG",
+        target="Response Engine",
+        details=f"System configs updated by {current_user.username}: {list(payload.configs.keys())}",
+        status="SUCCESS"
+    ))
+    db.commit()
+    return {"message": "System configuration updated successfully."}
+
+
+@app.get("/api/system/audit-logs")
+async def get_audit_logs(
+    limit: int = Query(50, ge=1, le=200),
+    current_user: User = Depends(require_role(["admin", "analyst"])),
+    db: Session = Depends(get_db)
+):
+    """Retrieves immutable system audit records."""
+    records = db.query(AuditLog).order_by(AuditLog.timestamp.desc()).limit(limit).all()
+    return [
+        {
+            "id": r.id,
+            "timestamp": r.timestamp.isoformat(),
+            "actor": r.actor,
+            "action": r.action,
+            "target": r.target,
+            "details": r.details,
+            "status": r.status
+        }
+        for r in records
+    ]
+
+
+@app.get("/api/reports/download/csv")
+async def download_csv_report(
+    range: str = Query("daily", pattern="^(daily|weekly|monthly)$"),
+    current_user: User = Depends(require_role(["admin", "analyst"])),
+    db: Session = Depends(get_db)
+):
+    """Streams RFC 4180 CSV export of security events, threats, and firewall actions."""
+    csv_buf = reports.generate_csv_report(timeframe=range, db=db)
+    filename = f"SecureNet_Audit_Report_{range}_{datetime.utcnow().strftime('%Y%m%d_%H%M%S')}.csv"
+    return StreamingResponse(
+        iter([csv_buf.getvalue()]),
+        media_type="text/csv",
+        headers={"Content-Disposition": f"attachment; filename={filename}"}
+    )
+
+
+# -----------------------------------------------------------------------------
 # WebSocket Stream Pipeline
 # -----------------------------------------------------------------------------
+
 @app.websocket("/ws/stream")
 async def websocket_stream_endpoint(
     websocket: WebSocket,

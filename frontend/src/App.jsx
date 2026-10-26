@@ -15,13 +15,17 @@ import Topology from './pages/Topology';
 import Reports from './pages/Reports';
 import ThreatMonitor from './pages/ThreatMonitor';
 import PacketAnalysis from './pages/PacketAnalysis';
+import AutomatedResponse from './pages/AutomatedResponse';
+import AIAnalysisPage from './pages/AIAnalysisPage';
 import { AlertTriangle, RefreshCw } from 'lucide-react';
 
 const PAGE_NAMES = {
   '/dashboard': 'Dashboard',
   '/topology': 'Network Topology',
   '/threats': 'Threat Monitor',
+  '/ai-analysis': 'AI Behavioral Analysis',
   '/packets': 'Packet Analysis',
+  '/response': 'Automated Response Centre',
   '/firewall': 'Firewall ACLs',
   '/reports': 'SIEM Reports'
 };
@@ -116,6 +120,28 @@ function AppContent() {
             <ProtectedRoute>
               <AppLayout>
                 <ThreatMonitor />
+              </AppLayout>
+            </ProtectedRoute>
+          }
+        />
+
+        <Route
+          path="/ai-analysis"
+          element={
+            <ProtectedRoute>
+              <AppLayout>
+                <AIAnalysisPage />
+              </AppLayout>
+            </ProtectedRoute>
+          }
+        />
+
+        <Route
+          path="/response"
+          element={
+            <ProtectedRoute allowedRoles={['admin', 'analyst']}>
+              <AppLayout>
+                <AutomatedResponse />
               </AppLayout>
             </ProtectedRoute>
           }

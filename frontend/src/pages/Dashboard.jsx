@@ -75,10 +75,17 @@ const Dashboard = ({ onInvestigatePacket }) => {
   const [isResetting, setIsResetting] = useState(false);
   const [showLiveFireModal, setShowLiveFireModal] = useState(false);
 
-  // 1. Core Live Metric Calculations (Strictly from real backend status & packets)
+  // 1. Core Live Metric Calculations (Strictly from real backend status & persisted telemetry)
   const totalPackets = status?.total_packets_captured ?? status?.packet_counter ?? 0;
+  const totalSecurityEvents = status?.total_security_events ?? 0;
+  const totalEvents = totalPackets + totalSecurityEvents;
   const totalThreats = status?.total_threats_detected ?? status?.threat_counter ?? 0;
   const activeRulesCount = status?.active_firewall_rules_count ?? firewallRules.length ?? 0;
+  const pendingDecisionsCount = status?.pending_response_decisions_count ?? 0;
+  const activeRestrictionsCount = status?.active_restrictions_count ?? activeRulesCount;
+  const observedDevicesCount = status?.recent_devices_count ?? 1;
+  const isSimulationMode = status?.simulation_mode ?? true;
+  const aiModelLoaded = status?.ai_model_loaded ?? false;
   const adapterName = status?.adapter?.name || 'NIC Interface';
   const adapterIp = status?.adapter?.ip || '0.0.0.0';
   const snifferRunning = status?.sniffer_running ?? false;
@@ -86,6 +93,7 @@ const Dashboard = ({ onInvestigatePacket }) => {
 
   // Current PPS (latest from 60-second rolling time-series)
   const currentPps = rollingStats.length > 0 ? rollingStats[rollingStats.length - 1].pps : 0;
+
 
   // Filtered Live Packets for Table
   const displayedPackets = useMemo(() => {
@@ -223,68 +231,107 @@ const Dashboard = ({ onInvestigatePacket }) => {
         </div>
       </div>
 
-      {/* 2. Four Live Metric Cards */}
-      <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-4 gap-4">
-        <div className="soc-card soc-card-hover rounded-2xl p-5 bg-white">
-          <div className="flex items-center justify-between mb-2">
-            <span className="text-xs font-bold uppercase tracking-wider text-slate-500 font-mono">
-              Total Packets Captured
+      {/* 2. Comprehensive Operational Metric Cards */}
+      <div className="grid grid-cols-2 lg:grid-cols-6 gap-3 sm:gap-4">
+        {/* Total Events */}
+        <div className="soc-card soc-card-hover rounded-2xl p-4 bg-white border border-slate-200 shadow-2xs">
+          <div className="flex items-center justify-between mb-1">
+            <span className="text-[10px] font-bold uppercase tracking-wider text-slate-500 font-mono">
+              Events Processed
             </span>
-            <div className="p-2 rounded-xl bg-blue-50 text-blue-600 border border-blue-200">
-              <Activity className="w-4 h-4" />
+            <div className="p-1.5 rounded-lg bg-blue-50 text-blue-600 border border-blue-200">
+              <Activity className="w-3.5 h-3.5" />
             </div>
           </div>
-          <div className="text-2xl font-extrabold text-slate-900 font-mono">
-            {totalPackets.toLocaleString()}
+          <div className="text-xl font-extrabold text-slate-900 font-mono truncate">
+            {totalEvents.toLocaleString()}
           </div>
-          <p className="text-[11px] text-slate-500 font-mono mt-1">Live raw socket ingress frames</p>
+          <p className="text-[10px] text-slate-400 font-mono mt-0.5 truncate">Raw packets & NIDS frames</p>
         </div>
 
-        <div className="soc-card soc-card-hover rounded-2xl p-5 bg-white">
-          <div className="flex items-center justify-between mb-2">
-            <span className="text-xs font-bold uppercase tracking-wider text-slate-500 font-mono">
-              Current Ingress PPS
+        {/* Observed Devices */}
+        <div className="soc-card soc-card-hover rounded-2xl p-4 bg-white border border-slate-200 shadow-2xs">
+          <div className="flex items-center justify-between mb-1">
+            <span className="text-[10px] font-bold uppercase tracking-wider text-slate-500 font-mono">
+              Observed Devices
             </span>
-            <div className="p-2 rounded-xl bg-emerald-50 text-emerald-600 border border-emerald-200">
-              <Cpu className="w-4 h-4" />
+            <div className="p-1.5 rounded-lg bg-indigo-50 text-indigo-600 border border-indigo-200">
+              <Server className="w-3.5 h-3.5" />
             </div>
           </div>
-          <div className="text-2xl font-extrabold text-slate-900 font-mono">
-            {currentPps} <span className="text-sm font-normal text-slate-500">pps</span>
+          <div className="text-xl font-extrabold text-slate-900 font-mono">
+            {observedDevicesCount}
           </div>
-          <p className="text-[11px] text-slate-500 font-mono mt-1">1-second reception rate</p>
+          <p className="text-[10px] text-slate-400 font-mono mt-0.5 truncate">Active network endpoints</p>
         </div>
 
-        <div className="soc-card soc-card-hover rounded-2xl p-5 bg-white">
-          <div className="flex items-center justify-between mb-2">
-            <span className="text-xs font-bold uppercase tracking-wider text-slate-500 font-mono">
+        {/* Threats Detected */}
+        <div className="soc-card soc-card-hover rounded-2xl p-4 bg-white border border-slate-200 shadow-2xs">
+          <div className="flex items-center justify-between mb-1">
+            <span className="text-[10px] font-bold uppercase tracking-wider text-slate-500 font-mono">
               Threats Detected
             </span>
-            <div className="p-2 rounded-xl bg-rose-50 text-rose-600 border border-rose-200">
-              <ShieldAlert className="w-4 h-4" />
+            <div className="p-1.5 rounded-lg bg-rose-50 text-rose-600 border border-rose-200">
+              <ShieldAlert className="w-3.5 h-3.5" />
             </div>
           </div>
-          <div className="text-2xl font-extrabold text-rose-600 font-mono">
+          <div className="text-xl font-extrabold text-rose-600 font-mono">
             {totalThreats.toLocaleString()}
           </div>
-          <p className="text-[11px] text-slate-500 font-mono mt-1">SQLi / XSS / Probe matches</p>
+          <p className="text-[10px] text-slate-400 font-mono mt-0.5 truncate">Confirmed signatures & probes</p>
         </div>
 
-        <div className="soc-card soc-card-hover rounded-2xl p-5 bg-white">
-          <div className="flex items-center justify-between mb-2">
-            <span className="text-xs font-bold uppercase tracking-wider text-slate-500 font-mono">
-              Active Firewall Rules
+        {/* Pending Approvals */}
+        <div className="soc-card soc-card-hover rounded-2xl p-4 bg-white border border-slate-200 shadow-2xs">
+          <div className="flex items-center justify-between mb-1">
+            <span className="text-[10px] font-bold uppercase tracking-wider text-slate-500 font-mono">
+              Pending Approvals
             </span>
-            <div className="p-2 rounded-xl bg-amber-50 text-amber-600 border border-amber-200">
-              <Flame className="w-4 h-4" />
+            <div className="p-1.5 rounded-lg bg-amber-50 text-amber-600 border border-amber-200">
+              <AlertTriangle className="w-3.5 h-3.5" />
             </div>
           </div>
-          <div className="text-2xl font-extrabold text-slate-900 font-mono">
-            {activeRulesCount.toLocaleString()}
+          <div className="text-xl font-extrabold text-amber-600 font-mono">
+            {pendingDecisionsCount}
           </div>
-          <p className="text-[11px] text-slate-500 font-mono mt-1">OS kernel drop ACL policies</p>
+          <p className="text-[10px] text-slate-400 font-mono mt-0.5 truncate">Decisions awaiting review</p>
+        </div>
+
+        {/* Active Restrictions */}
+        <div className="soc-card soc-card-hover rounded-2xl p-4 bg-white border border-slate-200 shadow-2xs">
+          <div className="flex items-center justify-between mb-1">
+            <span className="text-[10px] font-bold uppercase tracking-wider text-slate-500 font-mono">
+              Active Restrictions
+            </span>
+            <div className="p-1.5 rounded-lg bg-emerald-50 text-emerald-600 border border-emerald-200">
+              <ShieldCheck className="w-3.5 h-3.5" />
+            </div>
+          </div>
+          <div className="text-xl font-extrabold text-slate-900 font-mono">
+            {activeRestrictionsCount}
+          </div>
+          <p className="text-[10px] text-slate-400 font-mono mt-0.5 truncate">
+            {isSimulationMode ? 'Simulated & ACL drops' : 'Kernel drops enforced'}
+          </p>
+        </div>
+
+        {/* Current PPS */}
+        <div className="soc-card soc-card-hover rounded-2xl p-4 bg-white border border-slate-200 shadow-2xs">
+          <div className="flex items-center justify-between mb-1">
+            <span className="text-[10px] font-bold uppercase tracking-wider text-slate-500 font-mono">
+              Live Ingress PPS
+            </span>
+            <div className="p-1.5 rounded-lg bg-teal-50 text-teal-600 border border-teal-200">
+              <Cpu className="w-3.5 h-3.5" />
+            </div>
+          </div>
+          <div className="text-xl font-extrabold text-slate-900 font-mono">
+            {currentPps} <span className="text-xs font-normal text-slate-400">pps</span>
+          </div>
+          <p className="text-[10px] text-slate-400 font-mono mt-0.5 truncate">Current throughput</p>
         </div>
       </div>
+
 
       {/* 3. 60-Second Real-Time Time Series Charts Grid */}
       <div className="grid grid-cols-1 lg:grid-cols-3 gap-6">
@@ -502,9 +549,9 @@ const Dashboard = ({ onInvestigatePacket }) => {
                 <th className="py-2.5 px-3">Protocol</th>
                 <th className="py-2.5 px-3">Source IP</th>
                 <th className="py-2.5 px-3">Destination IP</th>
-                <th className="py-2.5 px-3">Target Port</th>
-                <th className="py-2.5 px-3">Size</th>
-                <th className="py-2.5 px-3">Status</th>
+                <th className="py-2.5 px-3">Port</th>
+                <th className="py-2.5 px-3">Risk Assessment</th>
+                <th className="py-2.5 px-3">Detection / AI</th>
                 <th className="py-2.5 px-3 text-right">Action</th>
               </tr>
             </thead>
@@ -528,17 +575,42 @@ const Dashboard = ({ onInvestigatePacket }) => {
                     <td className="py-2.5 px-3 font-bold text-blue-700">{pkt.src_ip || '127.0.0.1'}</td>
                     <td className="py-2.5 px-3 text-slate-800">{pkt.dst_ip || '127.0.0.1'}</td>
                     <td className="py-2.5 px-3 text-slate-500">{pkt.dst_port ?? 'n/a'}</td>
-                    <td className="py-2.5 px-3 text-slate-500">{pkt.length || 64} B</td>
                     <td className="py-2.5 px-3">
-                      {pkt.is_threat ? (
-                        <span className="px-2 py-0.5 rounded text-[10px] font-bold bg-rose-100 text-rose-800 border border-rose-200">
-                          {pkt.threat_type || 'THREAT'}
+                      {pkt.risk_score !== undefined && pkt.risk_score !== null ? (
+                        <span
+                          className={`px-2 py-0.5 rounded text-[10px] font-bold border ${
+                            pkt.risk_score >= 80
+                              ? 'bg-rose-50 text-rose-700 border-rose-200'
+                              : pkt.risk_score >= 50
+                              ? 'bg-amber-50 text-amber-700 border-amber-200'
+                              : pkt.risk_score >= 30
+                              ? 'bg-blue-50 text-blue-700 border-blue-200'
+                              : 'bg-slate-100 text-slate-600 border-slate-200'
+                          }`}
+                        >
+                          {pkt.risk_score}/100 ({pkt.risk_level || 'Normal'})
                         </span>
                       ) : (
-                        <span className="px-2 py-0.5 rounded text-[10px] font-bold bg-emerald-50 text-emerald-700 border border-emerald-200">
-                          CLEAN
-                        </span>
+                        <span className="text-slate-400 text-[10px]">-</span>
                       )}
+                    </td>
+                    <td className="py-2.5 px-3">
+                      <div className="flex items-center gap-1.5 flex-wrap">
+                        {pkt.is_threat ? (
+                          <span className="px-2 py-0.5 rounded text-[10px] font-bold bg-rose-100 text-rose-800 border border-rose-200">
+                            {pkt.threat_type || 'THREAT'}
+                          </span>
+                        ) : (
+                          <span className="px-2 py-0.5 rounded text-[10px] font-bold bg-emerald-50 text-emerald-700 border border-emerald-200">
+                            CLEAN
+                          </span>
+                        )}
+                        {pkt.is_anomaly && (
+                          <span className="px-1.5 py-0.5 rounded text-[9px] font-bold bg-purple-100 text-purple-700 border border-purple-200">
+                            AI ANOMALY
+                          </span>
+                        )}
+                      </div>
                     </td>
                     <td className="py-2.5 px-3 text-right">
                       <button

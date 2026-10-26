@@ -103,9 +103,78 @@ python traffic_replay.py --blast 1000 --pps 200 --target <PARTNER_IP>
 
 | Persona | Username | Password | Privileges |
 | :--- | :--- | :--- | :--- |
-| **Administrator** | `admin` | `admin123` | Full control (Real-time DPI, Firewall block/unblock, Topology editor, PDF reports) |
-| **Security Analyst**| `analyst` | `analyst123` | Real-time DPI, authorized firewall management, reports, read-only surveillance topology |
-| **Standard Employee**| `employee`| `employee123`| Read-only sanitized dashboard (payloads redacted), topology read-only, firewall & reports hidden |
+| **Administrator** | `admin` | `admin123` | Full control (Real-time DPI, Policy configuration, Simulation/Real firewall toggle, Approvals, Rollback, Topology editor, PDF/CSV reports, Audit logs) |
+| **Security Analyst**| `analyst` | `analyst123` | Real-time DPI, Threat investigation, AI host analysis, Manual action proposals, SIEM reports, Read-only topology |
+| **Standard Employee**| `employee`| `employee123`| Read-only sanitized dashboard (payloads redacted), topology read-only; firewall, response execution, and reports hidden |
+
+---
+
+## AI Behavioral Anomaly Detection & Threat Scoring
+
+### 1. Machine Learning Component (`IsolationForest`)
+SecureNet AI pairs deterministic signature-based detection with an unsupervised **Isolation Forest** behavioral model.
+- **Features Extracted (10 Network-Flow Metrics):**
+  1. `conn_count` (Connection frequency)
+  2. `unique_dst_ports` (Port diversity / port sweep indicator)
+  3. `unique_dst_ips` (Host fan-out / horizontal reconnaissance)
+  4. `total_bytes` (Volumetric transmission magnitude)
+  5. `avg_bytes_per_pkt` (Packet size anomalies / exfiltration)
+  6. `outbound_ratio` (Egress vs ingress imbalance)
+  7. `tcp_syn_ratio` (Half-open SYN scanning ratio)
+  8. `sensitive_port_ratio` (Access targeting database/SSH/RDP ports)
+  9. `dns_query_ratio` (DGA and DNS tunneling indicators)
+  10. `payload_entropy` (Shannon entropy in bits/char for encrypted/obfuscated payload detection)
+
+- **Offline Training & Validation Pipeline:**
+  ```powershell
+  cd backend
+  python train_ai_model.py
+  ```
+  Artifacts generated:
+  - Model: `backend/models_store/isolation_forest_v1.joblib`
+  - Metadata & Evaluation: `backend/models_store/model_metadata.json`
+  - Validation metrics: 95.33% normal baseline retention, 4.67% false positive rate, 100% holdout anomaly recall.
+
+### 2. Multi-Factor Risk Scoring Engine
+Risk scores are calculated dynamically on a calibrated 0–100 scale:
+$$\text{Score} = \min(100, [0.40 \times \text{Severity} + 0.25 \times \text{Confidence} + 0.20 \times \text{AI Anomaly} + 0.15 \times \text{Recurrence}] \times \text{Asset Multiplier})$$
+- **Risk Bands:**
+  - `0 – 29`: Low
+  - `30 – 49`: Moderate
+  - `50 – 69`: Elevated
+  - `70 – 89`: High
+  - `90 – 100`: Critical
+- **Critical Asset Multipliers:** Gateway routers (`1.25x`), Core Database Clusters (`1.35x`), Perimeter Firewalls (`1.30x`).
+
+---
+
+## NIDS Telemetry Ingestion (Suricata EVE JSON)
+
+The backend provides direct ingestion endpoints for structured NIDS sensors:
+- **Batch Event Ingestion:** `POST /api/nids/events/ingest`
+- **Multi-line EVE JSON Upload:** `POST /api/nids/eve/upload` (supports uploading standard `eve.json` files)
+- **Sensor Status & Health:** `GET /api/nids/sensor/status`
+
+Supported event types include `alert`, `flow`, `anomaly`, `dns`, and `http`. Telemetry is validated, deduplicated, normalized, stored in PostgreSQL/SQLite, and broadcast to the frontend in real time.
+
+---
+
+## Automated Response Centre & Safety Guardrails
+
+- **Simulation Mode by Default:** All automated responses initialize in safe simulation mode (`simulation_mode: true`). Actions are recorded in the SOC ledger without executing kernel-level firewall drops.
+- **Real Kernel Firewall Toggle:** Real enforcement (`netsh` on Windows / `iptables` on Linux) requires explicit administrative toggle (`real_enforcement_authorized: true`).
+- **Protected Allowlists:** Loopback addresses (`127.0.0.1`), configured gateways (`192.168.1.1`), internal DNS (`8.8.8.8`, `1.1.1.1`), and critical servers are protected from automated blocking.
+- **TTL Expiration & Rollback:** Actions can have configurable time-to-live (e.g. 15m, 1h). A background daemon automatically expires restrictions, and administrators can click **Rollback / Unblock** at any time.
+
+---
+
+## Automated Testing Suite
+
+Run the full automated test suite covering EVE JSON parsing, deterministic rule classification, AI feature extraction, risk scoring, response policies, and RBAC:
+```powershell
+cd backend
+pytest tests/test_nids_and_response.py -v
+```
 
 ---
 
@@ -113,7 +182,7 @@ python traffic_replay.py --blast 1000 --pps 200 --target <PARTNER_IP>
 
 ### 1. Start the Backend Server
 ```powershell
-cd securenet-ai\backend
+cd backend
 python main.py
 ```
 - Select interface `[1]` (Wi-Fi or primary LAN).
@@ -121,7 +190,7 @@ python main.py
 
 ### 2. Start the Frontend Dashboard
 ```powershell
-cd securenet-ai\frontend
+cd frontend
 npm run dev
 ```
 - Frontend runs on `http://localhost:5173`.

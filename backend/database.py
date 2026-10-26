@@ -4,20 +4,38 @@ Configures the SQLite engine, session factory, and handles initial baseline seed
 for default administrative/analyst/employee accounts and initial network topology.
 """
 
+import os
 import json
 from datetime import datetime
 from sqlalchemy import create_engine
 from sqlalchemy.orm import sessionmaker, Session
-from models import Base, User, PacketLog, FirewallRule, TopologyState
+from models import (
+    Base,
+    User,
+    PacketLog,
+    FirewallRule,
+    TopologyState,
+    SecurityEvent,
+    ThreatDetection,
+    AIAnalysis,
+    RiskAssessment,
+    ResponsePolicy,
+    ResponseAction,
+    AuditLog,
+    SystemConfig,
+)
 from security import get_password_hash
 
-DATABASE_URL = "sqlite:///./securenet.db"
+DATABASE_URL = os.getenv("DATABASE_URL", "sqlite:///./securenet.db")
 
-# SQLite configuration with thread-safe settings for concurrent FastAPI requests and background sniffers
-engine = create_engine(
-    DATABASE_URL,
-    connect_args={"check_same_thread": False}
-)
+# Support both PostgreSQL and SQLite seamlessly
+if DATABASE_URL.startswith("postgresql://") or DATABASE_URL.startswith("postgres://"):
+    engine = create_engine(DATABASE_URL, pool_pre_ping=True)
+else:
+    engine = create_engine(
+        DATABASE_URL,
+        connect_args={"check_same_thread": False}
+    )
 
 SessionLocal = sessionmaker(autocommit=False, autoflush=False, bind=engine)
 
@@ -150,8 +168,72 @@ def init_db():
             db.commit()
             print("[Database] Network topology baseline initialized.")
 
+        # 3. Seed Default Automated Response Policies if table is empty
+        if db.query(ResponsePolicy).count() == 0:
+            print("[Database] Seeding default Response Policies...")
+            policies = [
+                ResponsePolicy(
+                    name="Critical Threat Auto-Mitigation",
+                    description="Automatically isolates confirmed critical SQLi, XSS, and exploit attempts in simulation or real mode.",
+                    min_risk_score=85,
+                    severity_threshold="Critical",
+                    action_type="REQUIRE_APPROVAL",
+                    duration_seconds=3600,
+                    is_enabled=True,
+                    allowlist_ips="127.0.0.1,10.0.0.1,192.168.1.1,8.8.8.8,1.1.1.1,10.0.0.50"
+                ),
+                ResponsePolicy(
+                    name="Elevated Reconnaissance Containment",
+                    description="Recommends temporary port and address restrictions for high-frequency scanner probes.",
+                    min_risk_score=65,
+                    severity_threshold="High",
+                    action_type="RECOMMEND",
+                    duration_seconds=1800,
+                    is_enabled=True,
+                    allowlist_ips="127.0.0.1,10.0.0.1,192.168.1.1,8.8.8.8,1.1.1.1"
+                ),
+                ResponsePolicy(
+                    name="Behavioral Anomaly Surveillance",
+                    description="Flags anomalous network flow deviations detected by Isolation Forest for analyst investigation.",
+                    min_risk_score=50,
+                    severity_threshold="Medium",
+                    action_type="ALERT",
+                    duration_seconds=0,
+                    is_enabled=True,
+                    allowlist_ips="127.0.0.1,10.0.0.1,192.168.1.1"
+                ),
+            ]
+            db.add_all(policies)
+            db.commit()
+            print("[Database] Default response policies initialized.")
+
+        # 4. Seed Default System Configuration
+        default_configs = [
+            ("simulation_mode", "true", "Global response execution mode: true for simulation, false for OS enforcement"),
+            ("real_enforcement_authorized", "false", "Explicit administrator authorization toggle to execute live OS kernel drops"),
+            ("allowlist_ips", "127.0.0.1,10.0.0.1,192.168.1.1,8.8.8.8,1.1.1.1,10.0.0.50", "Protected network addresses immune to automated blocking"),
+            ("nids_sensor_status", "ACTIVE", "NIDS telemetry ingestion engine status (ACTIVE / WAITING / UNCONFIGURED)"),
+            ("ai_model_version", "1.0.0", "Active unsupervised anomaly model version"),
+        ]
+        for key, val, desc in default_configs:
+            if not db.query(SystemConfig).filter(SystemConfig.key == key).first():
+                db.add(SystemConfig(key=key, value=val, description=desc))
+        db.commit()
+
+        # 5. Seed initial system audit entry if empty
+        if db.query(AuditLog).count() == 0:
+            db.add(AuditLog(
+                actor="SYSTEM",
+                action="SYSTEM_INIT",
+                target="SecureNetAI Engine",
+                details="SecureNetAI Security Operations Engine and DB baseline initialized successfully.",
+                status="SUCCESS"
+            ))
+            db.commit()
+
     finally:
         db.close()
+
 
 
 def purge_packet_logs(db: Session) -> int:

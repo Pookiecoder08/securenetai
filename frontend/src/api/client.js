@@ -131,6 +131,144 @@ class APIClient {
     return await response.blob();
   }
 
+  // NIDS Telemetry & Sensor
+  async getNidsEvents(limit = 50, event_type = null, severity = null) {
+    let url = `/api/nids/events?limit=${limit}`;
+    if (event_type) url += `&event_type=${encodeURIComponent(event_type)}`;
+    if (severity !== null && severity !== undefined) url += `&severity=${severity}`;
+    return await this.request(url);
+  }
+
+  async ingestNidsEvents(events, sensor_id = 'suricata-sensor-01') {
+    return await this.request('/api/nids/events/ingest', {
+      method: 'POST',
+      body: JSON.stringify({ events, sensor_id })
+    });
+  }
+
+  async uploadEveFile(file) {
+    const savedToken = localStorage.getItem('securenet_token');
+    const headers = {};
+    if (savedToken) headers['Authorization'] = `Bearer ${savedToken}`;
+    const formData = new FormData();
+    formData.append('file', file);
+    const response = await fetch(`${BASE_URL}/api/nids/eve/upload`, {
+      method: 'POST',
+      headers,
+      body: formData
+    });
+    if (!response.ok) {
+      const err = await response.json().catch(() => ({}));
+      throw new Error(err.detail || 'Failed to upload EVE JSON file');
+    }
+    return await response.json();
+  }
+
+  async getNidsSensorStatus() {
+    return await this.request('/api/nids/sensor/status');
+  }
+
+  // Threat Detections
+  async getThreatDetections(limit = 50, status = null, category = null) {
+    let url = `/api/threats/detections?limit=${limit}`;
+    if (status) url += `&status=${encodeURIComponent(status)}`;
+    if (category) url += `&category=${encodeURIComponent(category)}`;
+    return await this.request(url);
+  }
+
+  async updateThreatStatus(threatId, status, notes = null) {
+    return await this.request(`/api/threats/${threatId}/status`, {
+      method: 'PATCH',
+      body: JSON.stringify({ status, notes })
+    });
+  }
+
+  // AI Behavioral Analysis
+  async getAiModelStatus() {
+    return await this.request('/api/ai/status');
+  }
+
+  async analyzeHostAi(target_ip) {
+    return await this.request('/api/ai/analyze-host', {
+      method: 'POST',
+      body: JSON.stringify({ target_ip })
+    });
+  }
+
+  // Risk Scoring
+  async getRiskAssessments(limit = 30) {
+    return await this.request(`/api/risk/assessments?limit=${limit}`);
+  }
+
+  // Automated Response Centre
+  async getResponsePolicies() {
+    return await this.request('/api/response/policies');
+  }
+
+  async saveResponsePolicy(policy) {
+    return await this.request('/api/response/policies', {
+      method: 'POST',
+      body: JSON.stringify(policy)
+    });
+  }
+
+  async getResponseActions(limit = 50, status = null) {
+    let url = `/api/response/actions?limit=${limit}`;
+    if (status) url += `&status=${encodeURIComponent(status)}`;
+    return await this.request(url);
+  }
+
+  async approveResponseAction(actionId) {
+    return await this.request(`/api/response/actions/${actionId}/approve`, {
+      method: 'POST'
+    });
+  }
+
+  async rejectResponseAction(actionId) {
+    return await this.request(`/api/response/actions/${actionId}/reject`, {
+      method: 'POST'
+    });
+  }
+
+  async rollbackResponseAction(actionId) {
+    return await this.request(`/api/response/actions/${actionId}/rollback`, {
+      method: 'POST'
+    });
+  }
+
+  async executeManualResponse(target_ip, reason, duration_seconds = 3600) {
+    return await this.request('/api/response/execute-manual', {
+      method: 'POST',
+      body: JSON.stringify({ target_ip, reason, duration_seconds })
+    });
+  }
+
+  async getResponseSystemConfig() {
+    return await this.request('/api/response/system-config');
+  }
+
+  async updateResponseSystemConfig(configs) {
+    return await this.request('/api/response/system-config', {
+      method: 'POST',
+      body: JSON.stringify({ configs })
+    });
+  }
+
+  async getAuditLogs(limit = 50) {
+    return await this.request(`/api/system/audit-logs?limit=${limit}`);
+  }
+
+  async downloadReportCsv(range = 'daily') {
+    const savedToken = localStorage.getItem('securenet_token');
+    const headers = {};
+    if (savedToken) headers['Authorization'] = `Bearer ${savedToken}`;
+    const response = await fetch(`${BASE_URL}/api/reports/download/csv?range=${range}`, { headers });
+    if (!response.ok) {
+      throw new Error(`CSV Report Download Error: ${response.status} ${response.statusText}`);
+    }
+    return await response.blob();
+  }
+
   // Controls & Test Harness
   async setFilterMode(mode) {
     return await this.request('/api/system/filter-mode', {
@@ -152,5 +290,6 @@ class APIClient {
     });
   }
 }
+
 
 export const apiClient = new APIClient();

@@ -1,0 +1,32 @@
+{
+  "model_type": "IsolationForest",
+  "version": "1.0.0",
+  "trained_at": "2026-10-12T12:16:24.120235",
+  "n_estimators": 100,
+  "contamination_parameter": 0.05,
+  "features": [
+    "conn_count",
+    "unique_dst_ports",
+    "unique_dst_ips",
+    "total_bytes",
+    "avg_bytes_per_pkt",
+    "outbound_ratio",
+    "tcp_syn_ratio",
+    "sensitive_port_ratio",
+    "dns_query_ratio",
+    "payload_entropy"
+  ],
+  "training_samples": 1200,
+  "test_normal_samples": 300,
+  "test_anomaly_samples": 70,
+  "evaluation_results": {
+    "inlier_retention_rate": 95.33,
+    "false_positive_rate": 4.67,
+    "anomaly_detection_recall": 100.0,
+    "anomalies_detected": "70/70",
+    "mean_normal_decision_score": 0.0595,
+    "mean_anomaly_decision_score": -0.1851
+  },
+  "status": "TRAINED_AND_VERIFIED",
+  "limitations": "Model requires periodic baseline recalibration; unsupervised scores do not imply deterministic attack attribution."
+}

@@ -65,6 +65,30 @@ const Reports = () => {
     }
   };
 
+  const handleDownloadCsv = async () => {
+    setIsDownloading(true);
+    setDownloadSuccess(false);
+    setDownloadError(null);
+    try {
+      const blob = await apiClient.downloadReportCsv(timeframe);
+      const url = window.URL.createObjectURL(blob);
+      const link = document.createElement('a');
+      link.href = url;
+      link.download = `SecureNet_Incident_Ledger_${timeframe}_${new Date().toISOString().slice(0, 10)}.csv`;
+      document.body.appendChild(link);
+      link.click();
+      document.body.removeChild(link);
+      window.URL.revokeObjectURL(url);
+
+      setDownloadSuccess(true);
+      setTimeout(() => setDownloadSuccess(false), 4000);
+    } catch (err) {
+      setDownloadError(err.message || 'Failed to download CSV report.');
+    } finally {
+      setIsDownloading(false);
+    }
+  };
+
   return (
     <div className="p-4 sm:p-6 space-y-6 max-w-7xl mx-auto">
       {/* Header Bar */}
@@ -75,18 +99,29 @@ const Reports = () => {
             Executive SIEM Cybersecurity Audit Reports
           </h1>
           <p className="text-xs text-slate-500 font-mono mt-0.5">
-            Automated ReportLab PDF Compiler &bull; Persistent Threat Audit Ledger
+            Automated ReportLab PDF Compiler &bull; RFC 4180 CSV Ledger Export
           </p>
         </div>
 
-        <button
-          onClick={handleDownloadPdf}
-          disabled={isDownloading}
-          className="flex items-center gap-2 px-4 py-2 bg-blue-600 hover:bg-blue-500 text-white font-mono font-bold text-xs rounded-xl shadow-2xs disabled:opacity-50 transition-all self-start sm:self-auto"
-        >
-          <Download className={`w-4 h-4 ${isDownloading ? 'animate-bounce' : ''}`} />
-          <span>{isDownloading ? 'Compiling PDF Stream...' : 'Download Executive PDF Report'}</span>
-        </button>
+        <div className="flex items-center gap-2 self-start sm:self-auto flex-wrap">
+          <button
+            onClick={handleDownloadCsv}
+            disabled={isDownloading}
+            className="flex items-center gap-2 px-3.5 py-2 bg-slate-100 hover:bg-slate-200 text-slate-700 border border-slate-200 font-mono font-bold text-xs rounded-xl shadow-2xs disabled:opacity-50 transition-all"
+          >
+            <Download className="w-4 h-4 text-slate-600" />
+            <span>Export CSV</span>
+          </button>
+
+          <button
+            onClick={handleDownloadPdf}
+            disabled={isDownloading}
+            className="flex items-center gap-2 px-4 py-2 bg-blue-600 hover:bg-blue-500 text-white font-mono font-bold text-xs rounded-xl shadow-2xs disabled:opacity-50 transition-all"
+          >
+            <Download className={`w-4 h-4 ${isDownloading ? 'animate-bounce' : ''}`} />
+            <span>{isDownloading ? 'Compiling PDF Stream...' : 'Download Executive PDF Report'}</span>
+          </button>
+        </div>
       </div>
 
       {/* Download Alerts */}

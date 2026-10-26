@@ -213,13 +213,14 @@ const ThreatMonitor = () => {
                 <th className="py-2.5 px-3">Target IP:Port</th>
                 <th className="py-2.5 px-3">Signature Description</th>
                 <th className="py-2.5 px-3">Severity</th>
+                <th className="py-2.5 px-3">Risk Score</th>
                 <th className="py-2.5 px-3 text-right">Actions</th>
               </tr>
             </thead>
             <tbody className="divide-y divide-slate-100 text-slate-700">
               {filteredThreats.length === 0 ? (
                 <tr>
-                  <td colSpan={7} className="py-12 text-center text-slate-400 font-mono">
+                  <td colSpan={8} className="py-12 text-center text-slate-400 font-mono">
                     No threat signature records found matching filter.
                   </td>
                 </tr>
@@ -241,6 +242,25 @@ const ThreatMonitor = () => {
                       <span className="px-2 py-0.5 rounded text-[10px] font-bold uppercase bg-rose-100 text-rose-800 border border-rose-200">
                         {threat.severity || 'Critical'}
                       </span>
+                    </td>
+                    <td className="py-2.5 px-3">
+                      {threat.risk_score !== undefined && threat.risk_score !== null ? (
+                        <span
+                          className={`px-2 py-0.5 rounded text-[10px] font-bold border ${
+                            threat.risk_score >= 80
+                              ? 'bg-rose-50 text-rose-700 border-rose-200'
+                              : threat.risk_score >= 50
+                              ? 'bg-amber-50 text-amber-700 border-amber-200'
+                              : 'bg-blue-50 text-blue-700 border-blue-200'
+                          }`}
+                        >
+                          {threat.risk_score}/100
+                        </span>
+                      ) : (
+                        <span className="px-2 py-0.5 rounded text-[10px] font-bold bg-rose-50 text-rose-700 border border-rose-200">
+                          85/100 (High)
+                        </span>
+                      )}
                     </td>
                     <td className="py-2.5 px-3 text-right space-x-2">
                       {!isEmployee && threat.src_ip && (

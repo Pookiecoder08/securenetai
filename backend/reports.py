@@ -430,3 +430,72 @@ def generate_pdf_report(timeframe: str, db: Session) -> io.BytesIO:
     doc.build(story)
     buffer.seek(0)
     return buffer
+
+
+def generate_csv_report(timeframe: str, db: Session) -> io.StringIO:
+    """
+    Generates a formal RFC 4180 CSV export of security events, threat detections,
+    and firewall enforcement audit records for SIEM ingestion.
+    """
+    import csv
+    delta = get_timeframe_delta(timeframe)
+    start_time = datetime.utcnow() - delta
+
+    csv_buffer = io.StringIO()
+    writer = csv.writer(csv_buffer)
+
+    # Header Row
+    writer.writerow([
+        "Event ID",
+        "Timestamp (UTC)",
+        "Source IP",
+        "Source Port",
+        "Destination IP",
+        "Destination Port",
+        "Protocol",
+        "Classification",
+        "Severity",
+        "Defense Outcome",
+        "Payload Extract"
+    ])
+
+    # Fetch Threat Records
+    threat_records = db.query(PacketLog).filter(
+        PacketLog.timestamp >= start_time,
+        PacketLog.is_threat == True
+    ).order_by(PacketLog.timestamp.desc()).all()
+
+    # Active Firewall Rules for cross-referencing
+    active_rules = set(
+        r.ip_address for r in db.query(FirewallRule).filter(FirewallRule.is_active == True).all()
+    )
+
+    for record in threat_records:
+        outcome = "ISOLATED (Active Drop Rule)" if record.src_ip in active_rules else "LOGGED (Signature Alert)"
+        threat_name = (record.threat_type or "").lower()
+        if "sqli" in threat_name or "sql" in threat_name:
+            sev = "Critical"
+        elif "xss" in threat_name:
+            sev = "High"
+        else:
+            sev = "Medium"
+
+        clean_sample = (record.payload_sample or "").replace("\n", " ").replace("\r", " ").strip()[:150]
+
+        writer.writerow([
+            f"SEC-{record.id}",
+            record.timestamp.isoformat(),
+            record.src_ip,
+            record.src_port or "",
+            record.dst_ip,
+            record.dst_port or "",
+            record.protocol,
+            record.threat_type or "Flagged Signature",
+            sev,
+            outcome,
+            clean_sample
+        ])
+
+    csv_buffer.seek(0)
+    return csv_buffer
+

@@ -11,7 +11,9 @@ import {
   FileSpreadsheet,
   Shield,
   X,
-  Activity
+  Activity,
+  Zap,
+  Cpu
 } from 'lucide-react';
 
 const Sidebar = ({ isOpen, onClose }) => {
@@ -26,16 +28,22 @@ const Sidebar = ({ isOpen, onClose }) => {
       show: true
     },
     {
-      to: '/topology',
-      label: 'Network Topology',
-      icon: Network,
-      show: true
-    },
-    {
       to: '/threats',
       label: 'Threat Monitor',
       icon: ShieldAlert,
       show: true
+    },
+    {
+      to: '/ai-analysis',
+      label: 'AI Analysis',
+      icon: Cpu,
+      show: true
+    },
+    {
+      to: '/response',
+      label: 'Automated Response',
+      icon: Zap,
+      show: !isEmployee
     },
     {
       to: '/packets',
@@ -48,6 +56,12 @@ const Sidebar = ({ isOpen, onClose }) => {
       label: 'Firewall ACLs',
       icon: Flame,
       show: !isEmployee
+    },
+    {
+      to: '/topology',
+      label: 'Network Topology',
+      icon: Network,
+      show: true
     },
     {
       to: '/reports',
