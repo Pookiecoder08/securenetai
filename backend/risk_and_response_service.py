@@ -34,14 +34,8 @@ RISK_BANDS = {
     "Critical": (90, 100)
 }
 
-# Known Critical Assets (IP / Port context)
-CRITICAL_ASSETS = {
-    "10.0.2.20": {"name": "Core Database Cluster", "multiplier": 1.35},
-    "198.51.100.1": {"name": "Gateway Border Router", "multiplier": 1.25},
-    "10.0.0.1": {"name": "Perimeter Next-Gen Firewall", "multiplier": 1.30},
-    "10.0.1.10": {"name": "Web Application Cluster", "multiplier": 1.15},
-    "10.0.0.50": {"name": "SecureNet NIDS Sensor", "multiplier": 1.20}
-}
+# Zero hardcoded dummy assets — populated dynamically from real configured network nodes
+CRITICAL_ASSETS = {}
 
 
 def get_risk_band(score: int) -> str:

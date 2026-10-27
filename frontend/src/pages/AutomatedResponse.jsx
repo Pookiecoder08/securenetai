@@ -284,7 +284,7 @@ const AutomatedResponse = () => {
               <label className="block text-[11px] font-semibold text-slate-600 mb-1">Target IP Address</label>
               <input
                 type="text"
-                placeholder="e.g. 198.51.100.88"
+                placeholder="e.g. 10.82.132.150"
                 value={manualIp}
                 onChange={(e) => setManualIp(e.target.value)}
                 className="w-full px-3 py-2 bg-slate-50 border border-slate-200 rounded-xl text-xs font-mono focus:bg-white focus:outline-blue-500"

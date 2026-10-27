@@ -58,15 +58,13 @@ def get_reports_summary(timeframe: str, db: Session) -> Dict[str, Any]:
     blocked_rules = db.query(FirewallRule).filter(FirewallRule.timestamp >= start_time).all()
     unique_blocked_ips = len(set(r.ip_address for r in blocked_rules))
 
-    # Prevention rate calculation
-    # In realistic industrial NIDS/SIEM deployments, efficiency is never an artificial 100%.
-    # It reflects genuine hardware packet capture boundaries, network jitter, and dynamic mitigation latency.
+    # Prevention rate calculation: strictly from real database records (0 dummy values)
     if total_threats == 0:
-        prevention_rate = 96.4  # Nominal baseline NIDS SLA benchmark
+        prevention_rate = 100.0 if total_packets > 0 else 0.0
     else:
-        mitigation_ratio = min(len(blocked_rules), total_threats) / max(total_threats, 1)
-        raw_rate = 91.5 + (mitigation_ratio * 5.7)
-        prevention_rate = round(min(97.8, max(88.2, raw_rate)), 1)
+        # Genuine mitigation efficiency: blocked rule count against detected threats
+        mitigation_count = len(blocked_rules)
+        prevention_rate = round(min(100.0, (mitigation_count / max(total_threats, 1)) * 100.0), 1)
 
     # Breakdown by threat type
     threat_query = db.query(

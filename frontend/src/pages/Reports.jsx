@@ -150,7 +150,7 @@ const Reports = () => {
             <ShieldCheck className="w-4 h-4 text-emerald-600" />
           </div>
           <div className="text-2xl font-extrabold font-mono text-emerald-600">
-            {summary?.prevention_rate ? `${summary.prevention_rate}%` : '96.4%'}
+            {summary?.prevention_rate != null ? `${summary.prevention_rate}%` : '0%'}
           </div>
         </div>
 

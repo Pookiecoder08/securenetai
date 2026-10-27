@@ -50,78 +50,8 @@ def get_db():
 
 
 def seed_default_topology() -> tuple[str, str]:
-    """Generates initial topology nodes and edges representing an enterprise perimeter."""
-    nodes = [
-        {
-            "id": "gateway-1",
-            "type": "customNode",
-            "position": {"x": 100, "y": 180},
-            "data": {
-                "label": "Gateway Edge Router",
-                "category": "router",
-                "ip": "198.51.100.1",
-                "status": "online",
-                "description": "Border BGP / Edge Routing Gateway"
-            }
-        },
-        {
-            "id": "firewall-1",
-            "type": "customNode",
-            "position": {"x": 360, "y": 180},
-            "data": {
-                "label": "Next-Gen Firewall (NGFW)",
-                "category": "firewall",
-                "ip": "10.0.0.1",
-                "status": "active",
-                "description": "Kernel Packet Filter & Active Defense Controller"
-            }
-        },
-        {
-            "id": "sensor-1",
-            "type": "customNode",
-            "position": {"x": 620, "y": 60},
-            "data": {
-                "label": "SecureNet NIDS Sensor",
-                "category": "sensor",
-                "ip": "10.0.0.50",
-                "status": "monitoring",
-                "description": "Promiscuous DPI & Threat Signature Analyzer"
-            }
-        },
-        {
-            "id": "web-1",
-            "type": "customNode",
-            "position": {"x": 620, "y": 280},
-            "data": {
-                "label": "Web Application Cluster",
-                "category": "server",
-                "ip": "10.0.1.10",
-                "status": "online",
-                "description": "Production HTTP/HTTPS Web Services"
-            }
-        },
-        {
-            "id": "db-1",
-            "type": "customNode",
-            "position": {"x": 880, "y": 280},
-            "data": {
-                "label": "Core Database Cluster",
-                "category": "database",
-                "ip": "10.0.2.20",
-                "status": "online",
-                "description": "Enterprise Relational Database (SQL)"
-            }
-        }
-    ]
-
-    edges = [
-        {"id": "e1-2", "source": "gateway-1", "target": "firewall-1", "animated": True, "label": "WAN Uplink"},
-        {"id": "e2-3", "source": "firewall-1", "target": "sensor-1", "animated": True, "label": "Mirror/TAP Port"},
-        {"id": "e2-4", "source": "firewall-1", "target": "web-1", "animated": False, "label": "DMZ Traffic"},
-        {"id": "e4-5", "source": "web-1", "target": "db-1", "animated": False, "label": "Internal Query Bus"}
-    ]
-
-    return json.dumps(nodes), json.dumps(edges)
+    """Returns clean empty topology baseline for strict zero-dummy real-time operations."""
+    return json.dumps([]), json.dumps([])
 
 
 def init_db():
@@ -180,7 +110,7 @@ def init_db():
                     action_type="REQUIRE_APPROVAL",
                     duration_seconds=3600,
                     is_enabled=True,
-                    allowlist_ips="127.0.0.1,10.0.0.1,192.168.1.1,8.8.8.8,1.1.1.1,10.0.0.50"
+                    allowlist_ips="127.0.0.1,1.1.1.1,8.8.8.8"
                 ),
                 ResponsePolicy(
                     name="Elevated Reconnaissance Containment",
@@ -190,7 +120,7 @@ def init_db():
                     action_type="RECOMMEND",
                     duration_seconds=1800,
                     is_enabled=True,
-                    allowlist_ips="127.0.0.1,10.0.0.1,192.168.1.1,8.8.8.8,1.1.1.1"
+                    allowlist_ips="127.0.0.1,1.1.1.1,8.8.8.8"
                 ),
                 ResponsePolicy(
                     name="Behavioral Anomaly Surveillance",
@@ -200,7 +130,7 @@ def init_db():
                     action_type="ALERT",
                     duration_seconds=0,
                     is_enabled=True,
-                    allowlist_ips="127.0.0.1,10.0.0.1,192.168.1.1"
+                    allowlist_ips="127.0.0.1,1.1.1.1,8.8.8.8"
                 ),
             ]
             db.add_all(policies)
@@ -211,7 +141,7 @@ def init_db():
         default_configs = [
             ("simulation_mode", "true", "Global response execution mode: true for simulation, false for OS enforcement"),
             ("real_enforcement_authorized", "false", "Explicit administrator authorization toggle to execute live OS kernel drops"),
-            ("allowlist_ips", "127.0.0.1,10.0.0.1,192.168.1.1,8.8.8.8,1.1.1.1,10.0.0.50", "Protected network addresses immune to automated blocking"),
+            ("allowlist_ips", "127.0.0.1,1.1.1.1,8.8.8.8", "Protected network addresses immune to automated blocking"),
             ("nids_sensor_status", "ACTIVE", "NIDS telemetry ingestion engine status (ACTIVE / WAITING / UNCONFIGURED)"),
             ("ai_model_version", "1.0.0", "Active unsupervised anomaly model version"),
         ]

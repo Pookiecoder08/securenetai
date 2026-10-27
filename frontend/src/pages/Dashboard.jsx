@@ -81,7 +81,7 @@ const Dashboard = ({ onInvestigatePacket }) => {
   const activeRulesCount = status?.active_firewall_rules_count ?? firewallRules.length ?? 0;
   const pendingDecisionsCount = status?.pending_response_decisions_count ?? 0;
   const activeRestrictionsCount = status?.active_restrictions_count ?? activeRulesCount;
-  const observedDevicesCount = status?.recent_devices_count ?? 1;
+  const observedDevicesCount = status?.recent_devices_count ?? 0;
   const isSimulationMode = status?.simulation_mode ?? true;
   const aiModelLoaded = status?.ai_model_loaded ?? false;
   const adapterName = status?.adapter?.name || 'NIC Interface';

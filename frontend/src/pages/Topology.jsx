@@ -406,6 +406,27 @@ const Topology = () => {
           </Panel>
         </ReactFlow>
 
+        {/* Zero-Dummy Architecture Empty State */}
+        {nodes.length === 0 && (
+          <div className="absolute inset-0 flex flex-col items-center justify-center bg-slate-50/60 z-10 pointer-events-none">
+            <div className="p-6 bg-white border border-slate-200 rounded-2xl shadow-sm text-center max-w-sm pointer-events-auto">
+              <Layers className="w-8 h-8 text-blue-600 mx-auto mb-2" />
+              <h4 className="font-bold text-slate-800 text-sm font-sans mb-1">Zero Dummy Assets</h4>
+              <p className="text-xs text-slate-500 font-mono mb-4">
+                No synthetic nodes configured. Add your real network infrastructure assets using the button above.
+              </p>
+              {isAdmin && (
+                <button
+                  onClick={() => setShowAddModal(true)}
+                  className="px-3.5 py-1.5 bg-blue-600 hover:bg-blue-500 text-white font-mono font-bold text-xs rounded-xl shadow-2xs transition-all cursor-pointer"
+                >
+                  + Add Real Asset
+                </button>
+              )}
+            </div>
+          </div>
+        )}
+
         {/* Node Inspector Drawer */}
         {selectedNode && (
           <div className="w-80 bg-white border-l border-slate-200 p-5 z-20 flex flex-col justify-between shadow-xl animate-in slide-in-from-right duration-200">

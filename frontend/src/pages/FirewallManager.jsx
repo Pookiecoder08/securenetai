@@ -162,7 +162,7 @@ const FirewallManager = () => {
               </label>
               <input
                 type="text"
-                placeholder="e.g. 198.51.100.44"
+                placeholder="e.g. 10.82.132.150"
                 value={ipAddress}
                 onChange={(e) => setIpAddress(e.target.value)}
                 required

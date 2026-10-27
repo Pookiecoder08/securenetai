@@ -1114,9 +1114,8 @@ async def get_topology(
 ):
     """Retrieves stored network architecture node and edge coordinates."""
     top = db.query(TopologyState).order_by(TopologyState.updated_at.desc()).first()
-    if not top:
-        nodes_json, edges_json = seed_default_topology()
-        return {"nodes": json.loads(nodes_json), "edges": json.loads(edges_json)}
+    if not top or not top.nodes_json:
+        return {"nodes": [], "edges": []}
 
     return {
         "nodes": json.loads(top.nodes_json),
@@ -1199,9 +1198,9 @@ async def get_system_status(
     sim_mode = ResponsePolicyEngine.get_system_config(db, "simulation_mode", "true").lower() == "true"
     real_auth = ResponsePolicyEngine.get_system_config(db, "real_enforcement_authorized", "false").lower() == "true"
 
-    # Distinct active devices observed in persisted telemetry
+    # Distinct active devices observed in persisted telemetry (0 dummy data)
     recent_devices = db.query(PacketLog.src_ip).distinct().limit(50).all()
-    devices_count = max(len(recent_devices), 1)
+    devices_count = len(recent_devices)
 
     return {
         "adapter": selected_interface_info,

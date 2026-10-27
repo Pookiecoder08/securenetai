@@ -25,7 +25,7 @@ const AIAnalysisPage = () => {
   const { status } = useSOC();
 
   const [aiStatus, setAiStatus] = useState(null);
-  const [targetIp, setTargetIp] = useState('198.51.100.77');
+  const [targetIp, setTargetIp] = useState('');
   const [analysisResult, setAnalysisResult] = useState(null);
   const [isAnalyzing, setIsAnalyzing] = useState(false);
   const [errorMsg, setErrorMsg] = useState(null);
@@ -135,7 +135,7 @@ const AIAnalysisPage = () => {
           <div className="flex-1">
             <input
               type="text"
-              placeholder="Enter host IP (e.g. 198.51.100.77, 10.0.1.10, 127.0.0.1)"
+              placeholder="Enter active network host IP to evaluate (e.g. 10.82.132.67)"
               value={targetIp}
               onChange={(e) => setTargetIp(e.target.value)}
               className="w-full px-3.5 py-2.5 bg-slate-50 border border-slate-200 rounded-xl text-xs font-mono focus:bg-white focus:outline-blue-500"
