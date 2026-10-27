@@ -1,5 +1,6 @@
 import React, { createContext, useContext, useState, useEffect, useCallback } from 'react';
 import axios from 'axios';
+import { supabase } from '../utils/supabaseClient';
 
 const AuthContext = createContext(null);
 
@@ -15,7 +16,7 @@ const isTokenValid = (tokenStr) => {
     const jsonPayload = atob(base64);
     const { exp } = JSON.parse(jsonPayload);
     if (exp && exp * 1000 < Date.now()) {
-      return false; // Expired!
+      return false; // Expired
     }
     return true;
   } catch (e) {
@@ -23,7 +24,7 @@ const isTokenValid = (tokenStr) => {
   }
 };
 
-// Global Axios Request Interceptor: Guarantees Authorization header is ALWAYS attached synchronously
+// Global Axios Request Interceptor: Guarantees Authorization header is ALWAYS attached
 axios.interceptors.request.use((config) => {
   const savedToken = localStorage.getItem('securenet_token');
   if (savedToken && !config.headers.Authorization) {
@@ -33,25 +34,52 @@ axios.interceptors.request.use((config) => {
 });
 
 export const AuthProvider = ({ children }) => {
+  const [session, setSession] = useState(null);
   const [token, setToken] = useState(() => {
     const saved = localStorage.getItem('securenet_token');
     if (saved && isTokenValid(saved)) {
       axios.defaults.headers.common['Authorization'] = `Bearer ${saved}`;
       return saved;
     }
-    // Expired or invalid
-    localStorage.removeItem('securenet_token');
-    localStorage.removeItem('securenet_username');
-    localStorage.removeItem('securenet_role');
-    delete axios.defaults.headers.common['Authorization'];
     return null;
   });
 
   const [user, setUser] = useState(() => localStorage.getItem('securenet_username') || null);
   const [role, setRole] = useState(() => localStorage.getItem('securenet_role') || null);
-  const [isLoading, setIsLoading] = useState(false);
+  const [isLoading, setIsLoading] = useState(true);
 
-  const logout = useCallback(() => {
+  const handleSessionUpdate = useCallback((sess) => {
+    setSession(sess);
+    const accessToken = sess.access_token;
+    const authUser = sess.user;
+
+    const userRole =
+      authUser?.user_metadata?.role ||
+      authUser?.app_metadata?.role ||
+      (authUser?.email?.includes('analyst')
+        ? 'analyst'
+        : authUser?.email?.includes('employee')
+        ? 'employee'
+        : 'admin');
+
+    const username =
+      authUser?.user_metadata?.username ||
+      authUser?.user_metadata?.full_name ||
+      authUser?.email?.split('@')[0] ||
+      authUser?.email ||
+      'Operator';
+
+    setToken(accessToken);
+    setUser(username);
+    setRole(userRole);
+
+    localStorage.setItem('securenet_token', accessToken);
+    localStorage.setItem('securenet_username', username);
+    localStorage.setItem('securenet_role', userRole);
+    axios.defaults.headers.common['Authorization'] = `Bearer ${accessToken}`;
+  }, []);
+
+  const clearAuthState = useCallback(() => {
     localStorage.removeItem('securenet_token');
     localStorage.removeItem('securenet_username');
     localStorage.removeItem('securenet_role');
@@ -59,28 +87,53 @@ export const AuthProvider = ({ children }) => {
     setToken(null);
     setUser(null);
     setRole(null);
+    setSession(null);
   }, []);
 
-  // Sync token state changes with axios and localStorage
+  // Initialize and subscribe to Supabase GoTrue Auth state
   useEffect(() => {
-    if (token && isTokenValid(token)) {
-      axios.defaults.headers.common['Authorization'] = `Bearer ${token}`;
-      localStorage.setItem('securenet_token', token);
-      if (user) localStorage.setItem('securenet_username', user);
-      if (role) localStorage.setItem('securenet_role', role);
-    }
-    setIsLoading(false);
-  }, [token, user, role]);
+    let mounted = true;
 
-  // Response Interceptor: Catch 401s on protected endpoints (excluding login attempts)
+    // 1. Check current Supabase session
+    supabase.auth.getSession().then(({ data: { session: activeSession } }) => {
+      if (!mounted) return;
+      if (activeSession && activeSession.access_token) {
+        handleSessionUpdate(activeSession);
+      } else {
+        const saved = localStorage.getItem('securenet_token');
+        if (!saved || !isTokenValid(saved)) {
+          clearAuthState();
+        }
+      }
+      setIsLoading(false);
+    }).catch(() => {
+      if (mounted) setIsLoading(false);
+    });
+
+    // 2. Real-time auth listener for login/logout/token-refresh events
+    const { data: { subscription } } = supabase.auth.onAuthStateChange((event, currentSession) => {
+      if (!mounted) return;
+      if (currentSession && (event === 'SIGNED_IN' || event === 'TOKEN_REFRESHED' || event === 'INITIAL_SESSION')) {
+        handleSessionUpdate(currentSession);
+      } else if (event === 'SIGNED_OUT') {
+        clearAuthState();
+      }
+    });
+
+    return () => {
+      mounted = false;
+      subscription?.unsubscribe();
+    };
+  }, [handleSessionUpdate, clearAuthState]);
+
+  // Intercept 401 Unauthorized responses
   useEffect(() => {
     const interceptor = axios.interceptors.response.use(
       (response) => response,
       (error) => {
         const url = error.config?.url || '';
         if (error.response?.status === 401 && !url.includes('/api/auth/login')) {
-          console.warn('[AuthContext] 401 Unauthorized received on protected route. Logging out.');
-          logout();
+          console.warn('[AuthContext] 401 Unauthorized on protected route.');
         }
         return Promise.reject(error);
       }
@@ -88,38 +141,49 @@ export const AuthProvider = ({ children }) => {
     return () => {
       axios.interceptors.response.eject(interceptor);
     };
-  }, [logout]);
+  }, []);
 
-  const login = async (username, password) => {
-    const params = new URLSearchParams();
-    params.append('username', username);
-    params.append('password', password);
+  const logout = useCallback(async () => {
+    try {
+      await supabase.auth.signOut();
+    } catch (e) {
+      console.warn('[Supabase Auth] SignOut exception:', e);
+    }
+    clearAuthState();
+  }, [clearAuthState]);
 
-    const response = await axios.post('/api/auth/login', params, {
-      headers: {
-        'Content-Type': 'application/x-www-form-urlencoded',
-      },
+  const login = async (identifier, password) => {
+    setIsLoading(true);
+
+    // If identifier is a username (e.g., 'admin'), normalize to email format
+    let email = identifier.trim();
+    if (!email.includes('@')) {
+      email = `${email.toLowerCase()}@securenet.ai`;
+    }
+
+    // 1. Authenticate against Supabase GoTrue Auth
+    const { data, error } = await supabase.auth.signInWithPassword({
+      email,
+      password,
     });
 
-    const data = response.data;
+    if (error) {
+      setIsLoading(false);
+      throw new Error(error.message || 'Supabase authentication failed. Please check credentials.');
+    }
 
-    // 1. Immediately set Authorization header on Axios synchronously
-    axios.defaults.headers.common['Authorization'] = `Bearer ${data.access_token}`;
+    if (data?.session) {
+      handleSessionUpdate(data.session);
+      setIsLoading(false);
+      return data;
+    }
 
-    // 2. Immediately save to localStorage synchronously
-    localStorage.setItem('securenet_token', data.access_token);
-    localStorage.setItem('securenet_username', data.username);
-    localStorage.setItem('securenet_role', data.role);
-
-    // 3. Update React state
-    setToken(data.access_token);
-    setUser(data.username);
-    setRole(data.role);
-
-    return data;
+    setIsLoading(false);
+    throw new Error('Supabase did not return an active session.');
   };
 
   const value = {
+    session,
     token,
     user,
     role,
@@ -141,3 +205,5 @@ export const useAuth = () => {
   }
   return context;
 };
+
+export default AuthContext;

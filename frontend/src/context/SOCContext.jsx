@@ -7,7 +7,7 @@ import React, {
   useRef
 } from 'react';
 
-import { apiClient } from '../api/client';
+import { apiClient, getWebSocketUrl } from '../utils/api';
 
 const SOCContext = createContext(null);
 
@@ -89,21 +89,16 @@ export const SOCProvider = ({ children }) => {
   const wsRef = useRef(null);
   const reconnectTimeoutRef = useRef(null);
   const reconnectAttemptRef = useRef(0);
+  const toastCounterRef = useRef(0);
 
   const packetsThisSecondRef = useRef(0);
   const inboundBytesThisSecondRef = useRef(0);
   const outboundBytesThisSecondRef = useRef(0);
-
   const lastPacketCounterRef = useRef(0);
 
-  // ============================================================
-  // TOAST MANAGEMENT
-  // ============================================================
-
   const addToast = useCallback((toast) => {
-    const id =
-      Date.now() +
-      Math.random().toString(36).substring(2, 5);
+    toastCounterRef.current += 1;
+    const id = `toast-${Date.now()}-${toastCounterRef.current}`;
 
     const newToast = {
       id,
@@ -180,20 +175,9 @@ export const SOCProvider = ({ children }) => {
     }
   }, [connectionState]);
 
-  // ============================================================
-  // INITIAL LOAD + 1 SECOND TELEMETRY INTERVAL
-  // ============================================================
-
+  // Hydrate initial system telemetry once on mount; real-time updates flow strictly via WebSocket events
   useEffect(() => {
     fetchTelemetry();
-
-    const interval = setInterval(() => {
-      fetchTelemetry();
-    }, 1000);
-
-    return () => {
-      clearInterval(interval);
-    };
   }, [fetchTelemetry]);
 
   // ============================================================
@@ -390,8 +374,8 @@ export const SOCProvider = ({ children }) => {
     // ws://localhost:8000/ws/stream
     // ----------------------------------------------------------
 
-    const wsUrl =
-      `ws://${window.location.hostname}:8000/ws/stream`;
+    const savedToken = typeof localStorage !== 'undefined' ? localStorage.getItem('securenet_token') : null;
+    const wsUrl = getWebSocketUrl(savedToken, '/ws/stream');
 
     console.log(
       '[SecureNet AI] Connecting WebSocket:',

@@ -15,8 +15,6 @@ import Topology from './pages/Topology';
 import Reports from './pages/Reports';
 import ThreatMonitor from './pages/ThreatMonitor';
 import PacketAnalysis from './pages/PacketAnalysis';
-import AutomatedResponse from './pages/AutomatedResponse';
-import AIAnalysisPage from './pages/AIAnalysisPage';
 import { AlertTriangle, RefreshCw } from 'lucide-react';
 
 const PAGE_NAMES = {
@@ -122,9 +120,6 @@ function AppContent() {
             </ProtectedRoute>
           }
         />
-
-        <Route path="/ai-analysis" element={<Navigate to="/dashboard" replace />} />
-        <Route path="/response" element={<Navigate to="/dashboard" replace />} />
 
         <Route
           path="/packets"

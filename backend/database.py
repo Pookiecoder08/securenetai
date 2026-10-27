@@ -26,11 +26,22 @@ from models import (
 )
 from security import get_password_hash
 
-DATABASE_URL = os.getenv("DATABASE_URL", "sqlite:///./securenet.db")
+BASE_DIR = os.path.dirname(os.path.abspath(__file__))
+DEFAULT_DB_PATH = os.path.join(BASE_DIR, "securenet.db")
+DATABASE_URL = os.getenv("DATABASE_URL", f"sqlite:///{DEFAULT_DB_PATH}")
 
-# Support both PostgreSQL and SQLite seamlessly
-if DATABASE_URL.startswith("postgresql://") or DATABASE_URL.startswith("postgres://"):
-    engine = create_engine(DATABASE_URL, pool_pre_ping=True)
+# Normalize Supabase/Heroku postgres:// URLs for SQLAlchemy
+if DATABASE_URL.startswith("postgres://"):
+    DATABASE_URL = DATABASE_URL.replace("postgres://", "postgresql://", 1)
+
+# Support both Supabase PostgreSQL and SQLite seamlessly
+if DATABASE_URL.startswith("postgresql://") or DATABASE_URL.startswith("postgresql+"):
+    engine = create_engine(
+        DATABASE_URL,
+        pool_pre_ping=True,
+        pool_size=10,
+        max_overflow=20
+    )
 else:
     engine = create_engine(
         DATABASE_URL,
@@ -49,9 +60,104 @@ def get_db():
         db.close()
 
 
+DEFAULT_TOPOLOGY_NODES = [
+    {
+        "id": "gateway-1",
+        "type": "customNode",
+        "position": {"x": 100, "y": 180},
+        "data": {
+            "label": "Gateway Edge Router",
+            "category": "router",
+            "ip": "198.51.100.1",
+            "status": "online",
+            "description": "Border BGP / Edge Routing Gateway"
+        }
+    },
+    {
+        "id": "firewall-1",
+        "type": "customNode",
+        "position": {"x": 360, "y": 180},
+        "data": {
+            "label": "Next-Gen Firewall (NGFW)",
+            "category": "firewall",
+            "ip": "10.0.0.1",
+            "status": "active",
+            "description": "Kernel Packet Filter & Active Defense Controller"
+        }
+    },
+    {
+        "id": "sensor-1",
+        "type": "customNode",
+        "position": {"x": 620, "y": 60},
+        "data": {
+            "label": "SecureNet NIDS Sensor",
+            "category": "sensor",
+            "ip": "10.0.0.50",
+            "status": "monitoring",
+            "description": "Promiscuous DPI & Threat Signature Analyzer"
+        }
+    },
+    {
+        "id": "web-1",
+        "type": "customNode",
+        "position": {"x": 620, "y": 280},
+        "data": {
+            "label": "Web Application Cluster",
+            "category": "server",
+            "ip": "10.0.1.10",
+            "status": "online",
+            "description": "Production HTTP/HTTPS Web Services"
+        }
+    },
+    {
+        "id": "db-1",
+        "type": "customNode",
+        "position": {"x": 880, "y": 280},
+        "data": {
+            "label": "Core Database Cluster",
+            "category": "database",
+            "ip": "10.0.2.20",
+            "status": "online",
+            "description": "Enterprise Relational Database (SQL)"
+        }
+    }
+]
+
+DEFAULT_TOPOLOGY_EDGES = [
+    {
+        "id": "e1-2",
+        "source": "gateway-1",
+        "target": "firewall-1",
+        "animated": True,
+        "label": "WAN Uplink"
+    },
+    {
+        "id": "e2-3",
+        "source": "firewall-1",
+        "target": "sensor-1",
+        "animated": True,
+        "label": "Mirror/TAP Port"
+    },
+    {
+        "id": "e2-4",
+        "source": "firewall-1",
+        "target": "web-1",
+        "animated": False,
+        "label": "DMZ Traffic"
+    },
+    {
+        "id": "e4-5",
+        "source": "web-1",
+        "target": "db-1",
+        "animated": False,
+        "label": "Internal Query Bus"
+    }
+]
+
+
 def seed_default_topology() -> tuple[str, str]:
-    """Returns clean empty topology baseline for strict zero-dummy real-time operations."""
-    return json.dumps([]), json.dumps([])
+    """Returns baseline network architecture with Gateway, Firewall, Sensor, Web, and DB."""
+    return json.dumps(DEFAULT_TOPOLOGY_NODES), json.dumps(DEFAULT_TOPOLOGY_EDGES)
 
 
 def init_db():
@@ -141,13 +247,16 @@ def init_db():
         default_configs = [
             ("simulation_mode", "true", "Global response execution mode: true for simulation, false for OS enforcement"),
             ("real_enforcement_authorized", "false", "Explicit administrator authorization toggle to execute live OS kernel drops"),
-            ("allowlist_ips", "127.0.0.1,1.1.1.1,8.8.8.8", "Protected network addresses immune to automated blocking"),
+            ("allowlist_ips", "127.0.0.1,10.0.0.1,192.168.1.1,8.8.8.8,1.1.1.1,10.0.0.50", "Protected network addresses immune to automated blocking"),
             ("nids_sensor_status", "ACTIVE", "NIDS telemetry ingestion engine status (ACTIVE / WAITING / UNCONFIGURED)"),
             ("ai_model_version", "1.0.0", "Active unsupervised anomaly model version"),
         ]
         for key, val, desc in default_configs:
-            if not db.query(SystemConfig).filter(SystemConfig.key == key).first():
+            cfg = db.query(SystemConfig).filter(SystemConfig.key == key).first()
+            if not cfg:
                 db.add(SystemConfig(key=key, value=val, description=desc))
+            elif key == "allowlist_ips" and "192.168.1.1" not in (cfg.value or ""):
+                cfg.value = val
         db.commit()
 
         # 5. Seed initial system audit entry if empty
@@ -171,9 +280,10 @@ def purge_packet_logs(db: Session) -> int:
     count = db.query(PacketLog).delete()
     db.commit()
     try:
-        # Reclaim disk space on SQLite
-        db.execute("VACUUM")
+        from sqlalchemy import text
+        from sqlalchemy.exc import SQLAlchemyError
+        db.execute(text("VACUUM"))
         db.commit()
-    except Exception:
+    except SQLAlchemyError:
         pass
     return count

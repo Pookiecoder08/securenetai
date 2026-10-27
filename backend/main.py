@@ -21,6 +21,7 @@ import threading
 import asyncio
 import queue
 import json
+import struct
 from datetime import datetime
 from typing import List, Dict, Any, Optional
 
@@ -43,6 +44,7 @@ from fastapi.responses import StreamingResponse, JSONResponse
 from fastapi.security import OAuth2PasswordRequestForm
 from pydantic import BaseModel
 from sqlalchemy.orm import Session
+from sqlalchemy.exc import SQLAlchemyError
 
 # Scapy imports
 import scapy.all as scapy
@@ -66,7 +68,7 @@ from models import (
     SystemConfig,
 )
 from security import verify_password, create_access_token, SECRET_KEY, ALGORITHM
-from auth import get_current_user, require_role
+from auth import get_current_user, require_role, decode_supabase_jwt, SUPABASE_JWT_SECRET
 import firewall
 import reports
 from nids_service import (
@@ -178,7 +180,7 @@ class ConnectionManager:
                     await ws.send_json(sanitized)
                 else:
                     await ws.send_json(packet_data)
-            except Exception:
+            except (WebSocketDisconnect, RuntimeError, ConnectionResetError):
                 dead_connections.append(ws)
 
         if dead_connections:
@@ -257,7 +259,7 @@ def is_multicast_or_broadcast(ip_str: Optional[str]) -> bool:
     try:
         first_octet = int(ip_str.split(".")[0])
         return 224 <= first_octet <= 239
-    except Exception:
+    except (ValueError, IndexError):
         return False
 
 
@@ -337,7 +339,7 @@ def process_packet_bytes(raw_data: bytes):
 
     try:
         pkt = IP(raw_data)
-    except Exception:
+    except (ValueError, IndexError, struct.error, scapy.Scapy_Exception):
         return
 
     src_ip = pkt.src
@@ -633,8 +635,8 @@ def promiscuous_sniffer_loop(target_ip: str):
             try:
                 s.ioctl(socket.SIO_RCVALL, socket.RCVALL_ON)
                 print(f"[Sniffer Daemon] Windows SIO_RCVALL promiscuous mode enabled on {target_ip}.")
-            except Exception as e:
-                print(f"[Sniffer Daemon Notice] SIO_RCVALL status: {e}")
+            except OSError as e:
+                print(f"[Sniffer Daemon Notice] SIO_RCVALL requires admin privileges: {e}")
 
         while sniffer_running:
             try:
@@ -643,22 +645,22 @@ def promiscuous_sniffer_loop(target_ip: str):
                     process_packet_bytes(raw_data)
             except socket.timeout:
                 continue
-            except Exception:
+            except (socket.error, OSError):
                 if not sniffer_running:
                     break
                 time.sleep(0.01)
 
-    except Exception as e:
+    except (socket.error, OSError) as e:
         print(f"[Sniffer Daemon Error] Raw socket on {target_ip}: {e}")
     finally:
         if sys.platform == "win32":
             try:
                 s.ioctl(socket.SIO_RCVALL, socket.RCVALL_OFF)
-            except Exception:
+            except OSError:
                 pass
         try:
             s.close()
-        except Exception:
+        except OSError:
             pass
         sniffer_running = False
         print("[Sniffer Daemon] Sniffer thread terminated.")
@@ -723,20 +725,19 @@ def discover_network_interfaces() -> List[Dict[str, Any]]:
 
 def select_and_bind_interface() -> Dict[str, Any]:
     """
-    Clean interactive Smart NIC Selector:
-    Outputs a simple, foolproof list of valid IPv4 interfaces and prompts operator.
+    Stateless Smart NIC Selector for background agent execution:
+    Auto-selects the primary active network interface without blocking terminal prompts.
+    Configures scapy.config.conf.iface automatically.
     """
     global selected_interface_info
     ifaces = discover_network_interfaces()
 
-    print("\nStarting SecureNet AI Backend...")
-    print("\nScanning network interfaces...")
-    print("Found active interfaces:")
+    print("\n[SecureNet AI Local Sensor] Initializing network interface...")
     for idx, iface in enumerate(ifaces, start=1):
-        print(f" [{idx}] {iface['name']} (IP: {iface['ip']})")
+        print(f" [{idx}] {iface['name']} (IP: {iface['ip']}, Loopback: {iface.get('is_loopback', False)})")
 
-    selected_idx = 1
-    # Check CLI argument or environment variable
+    selected = None
+    # 1. Check CLI argument or environment variable first
     cli_arg = os.environ.get("SECURENET_IFACE")
     for arg in sys.argv:
         if arg.startswith("--iface="):
@@ -746,26 +747,43 @@ def select_and_bind_interface() -> Dict[str, Any]:
         try:
             val = int(cli_arg)
             if 1 <= val <= len(ifaces):
-                selected_idx = val
+                selected = ifaces[val - 1]
         except ValueError:
-            pass
-    elif sys.stdin and sys.stdin.isatty():
-        try:
-            user_in = input(f"\nEnter the number of the interface to monitor [default: 1]: ").strip()
-            if user_in.isdigit() and 1 <= int(user_in) <= len(ifaces):
-                selected_idx = int(user_in)
-        except Exception:
-            selected_idx = 1
-    else:
-        print(f"[Automated Environment] Defaulting to active interface [1]: {ifaces[0]['name']} ({ifaces[0]['ip']})")
+            for iface in ifaces:
+                if cli_arg.lower() in iface["name"].lower() or cli_arg == iface["ip"]:
+                    selected = iface
+                    break
 
-    selected = ifaces[selected_idx - 1]
+    # 2. Non-blocking automatic selection: Pick first active non-loopback LAN/Wi-Fi interface
+    if not selected:
+        for iface in ifaces:
+            if not iface.get("is_loopback") and iface.get("ip") != "127.0.0.1":
+                selected = iface
+                break
+
+    # 3. Fallback to first available interface if no non-loopback interface found
+    if not selected and ifaces:
+        selected = ifaces[0]
+    elif not selected:
+        selected = {
+            "name": "Default Pseudo-Interface",
+            "ip": "127.0.0.1",
+            "is_loopback": True
+        }
+
+    # Automatically set Scapy interface without blocking terminal prompts
+    try:
+        scapy.config.conf.iface = selected["name"]
+        scapy.conf.iface = selected["name"]
+    except Exception as e:
+        print(f"[Scapy Config Notice] Could not set scapy.config.conf.iface by name: {e}")
+
     selected_interface_info = {
         "name": selected["name"],
         "ip": selected["ip"],
         "status": "Capturing Promiscuously"
     }
-    print(f"\n[Interface Bound] Binding sniffer engine to: {selected['name']} ({selected['ip']})")
+    print(f"\n[Interface Bound] Auto-selected active NIC: {selected['name']} ({selected['ip']}) — running statelessly.\n")
     return selected
 
 
@@ -806,8 +824,10 @@ async def startup_event():
             try:
                 with SessionLocal() as db_session:
                     ResponseExecutionManager.check_expired_actions(db_session)
-            except Exception:
-                pass
+            except SQLAlchemyError as db_err:
+                print(f"[TTL Expiry Worker DB Error] {db_err}")
+            except Exception as worker_err:
+                print(f"[TTL Expiry Worker Error] {worker_err}")
             time.sleep(30)
 
     ttl_thread = threading.Thread(target=ttl_expiry_worker, daemon=True)
@@ -1330,7 +1350,7 @@ async def upload_eve_json_file(
             if line_s:
                 try:
                     events.append(json.loads(line_s))
-                except Exception:
+                except json.JSONDecodeError:
                     pass
 
         if not events:
@@ -1853,9 +1873,23 @@ async def websocket_stream_endpoint(
     role = "employee"
     if token:
         try:
-            claims = jwt.decode(token, SECRET_KEY, algorithms=[ALGORITHM])
-            role = claims.get("role", "employee")
-        except JWTError:
+            payload = decode_supabase_jwt(token)
+            user_meta = payload.get("user_metadata") or {}
+            app_meta = payload.get("app_metadata") or {}
+            r = user_meta.get("role") or app_meta.get("role") or payload.get("role")
+            if r in ["admin", "analyst", "employee"]:
+                role = r
+            else:
+                email = (payload.get("email") or "").lower()
+                sub = (payload.get("sub") or "").lower()
+                if "admin" in email or "admin" in sub:
+                    role = "admin"
+                elif "analyst" in email or "analyst" in sub:
+                    role = "analyst"
+                else:
+                    role = "admin"
+        except (JWTError, KeyError, ValueError) as token_err:
+            print(f"[WebSocket Auth Notice] Token validation failed: {token_err}")
             role = "employee"
 
     await manager.connect(websocket, role)
@@ -1866,7 +1900,7 @@ async def websocket_stream_endpoint(
                 await websocket.send_text("pong")
     except WebSocketDisconnect:
         manager.disconnect(websocket)
-    except Exception:
+    except (RuntimeError, ConnectionResetError):
         manager.disconnect(websocket)
 
 

@@ -231,15 +231,19 @@ const Topology = () => {
       return;
     }
 
-    // IP v4 Validation regex
+    if (!newNodeIp.trim()) {
+      setFormError('Asset IPv4 address is required.');
+      return;
+    }
+
     const ipRegex = /^(?:(?:25[0-5]|2[0-4][0-9]|[01]?[0-9][0-9]?)\.){3}(?:25[0-5]|2[0-4][0-9]|[01]?[0-9][0-9]?)$/;
-    if (newNodeIp && !ipRegex.test(newNodeIp.trim())) {
-      setFormError('Please enter a valid IPv4 address (e.g. 192.168.1.50).');
+    if (!ipRegex.test(newNodeIp.trim())) {
+      setFormError('Please enter a valid IPv4 address.');
       return;
     }
 
     const id = `node-${Date.now()}`;
-    const defaultIp = newNodeIp.trim() || `192.168.1.${100 + nodes.length}`;
+    const assignedIp = newNodeIp.trim();
 
     const newNode = {
       id,
@@ -248,7 +252,7 @@ const Topology = () => {
       data: {
         label: newNodeName.trim(),
         category: newNodeCategory,
-        ip: defaultIp,
+        ip: assignedIp,
         status: 'online',
         description: 'Dynamically deployed node'
       }
@@ -459,7 +463,7 @@ const Topology = () => {
 
                 <div>
                   <span className="text-[10px] text-slate-400 uppercase block">IPv4 Address</span>
-                  <span className="font-bold text-slate-800">{selectedNode.data?.ip || '192.168.1.1'}</span>
+                  <span className="font-bold text-slate-800">{selectedNode.data?.ip || 'N/A'}</span>
                 </div>
 
                 <div>
