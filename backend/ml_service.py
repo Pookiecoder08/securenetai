@@ -76,16 +76,40 @@ def calculate_shannon_entropy(data_str: str) -> float:
 
 class FeatureExtractor:
     """
-    Extracts reproducible network flow features from packet sequences or summarized telemetry.
+    Extracts reproducible network flow features from packet sequences or stateful sliding windows.
+    Ingests sliding-window telemetry from StatefulTrafficTracker to ensure accurate flow metrics
+    for the Isolation Forest behavioral model.
     """
 
     @staticmethod
-    def extract_from_packets(packets: List[Dict[str, Any]], host_ip: str) -> Dict[str, float]:
-        """Calculates 10 numeric network-flow features for a target host."""
-        if not packets:
+    def extract_from_packets(
+        packets: List[Dict[str, Any]],
+        host_ip: str,
+        tracker: Optional[Any] = None
+    ) -> Dict[str, float]:
+        """
+        Calculates 10 numeric network-flow features for a target host.
+        If a StatefulTrafficTracker is supplied or active, integrates the 60-second rolling window
+        so that conn_count, total_bytes, avg_bytes_per_pkt, and tcp_syn_ratio accurately
+        reflect stateful volumetric bursts and SYN floods.
+        """
+        # If tracker is provided, pull the 60s sliding window
+        window_packets = []
+        tracker_metrics = None
+
+        if tracker is not None:
+            if hasattr(tracker, "get_packets_for_ip"):
+                window_packets = tracker.get_packets_for_ip(host_ip)
+            if hasattr(tracker, "get_metrics"):
+                tracker_metrics = tracker.get_metrics(host_ip)
+
+        # Use rolling window packets if available and populated; otherwise use passed packets
+        active_packets = window_packets if (window_packets and len(window_packets) >= len(packets)) else packets
+
+        if not active_packets and not tracker_metrics:
             return {name: 0.0 for name in FEATURE_NAMES}
 
-        conn_count = len(packets)
+        conn_count = len(active_packets)
         dst_ports = set()
         dst_ips = set()
         total_bytes = 0
@@ -97,13 +121,14 @@ class FeatureExtractor:
 
         recon_ports = {21, 22, 23, 25, 445, 1433, 1521, 3306, 3389, 5432, 6379, 8080, 27017, 31337}
 
-        for p in packets:
+        for p in active_packets:
             src = p.get("src_ip", "")
             dst = p.get("dst_ip", "")
             dport = p.get("dst_port")
-            length = p.get("length") or 64
+            length = p.get("length") or p.get("size") or 64
             proto = (p.get("protocol") or "").upper()
-            payload = p.get("payload_ascii") or ""
+            payload = p.get("payload_ascii") or p.get("payload_sample") or ""
+            tcp_flags = str(p.get("tcp_flags") or "")
 
             if dport is not None:
                 dst_ports.add(dport)
@@ -120,8 +145,10 @@ class FeatureExtractor:
             if proto == "DNS" or dport == 53 or p.get("src_port") == 53:
                 dns_count += 1
 
-            # Estimate SYN probe if packet has minimal length and TCP
-            if proto == "TCP" and length <= 64:
+            # Detect TCP SYN probe: SYN flag set without ACK, or minimal TCP probe frame
+            if ("S" in tcp_flags and "A" not in tcp_flags) or tcp_flags == "S" or tcp_flags == "0x02":
+                syn_count += 1
+            elif proto == "TCP" and length <= 64 and ("S" in tcp_flags or not tcp_flags):
                 syn_count += 1
 
             if payload:
@@ -130,14 +157,27 @@ class FeatureExtractor:
         combined_payload = "".join(payload_samples)
         entropy = calculate_shannon_entropy(combined_payload) if combined_payload else 0.0
 
+        # Calculate primary features
+        avg_bytes = round(float(total_bytes) / max(conn_count, 1), 2)
+        syn_ratio = round(float(syn_count) / max(conn_count, 1), 3)
+
+        # Harmonize with tracker metrics if available
+        if tracker_metrics and tracker_metrics.get("packets_in_window", 0) > 0:
+            tracker_conn = tracker_metrics["packets_in_window"]
+            if tracker_conn >= conn_count:
+                conn_count = tracker_conn
+                total_bytes = tracker_metrics.get("total_bytes", total_bytes)
+                avg_bytes = round(float(tracker_metrics.get("avg_bytes", avg_bytes)), 2)
+                syn_ratio = round(float(tracker_metrics.get("tcp_syn_ratio", syn_ratio)), 3)
+
         return {
             "conn_count": float(conn_count),
             "unique_dst_ports": float(len(dst_ports)),
             "unique_dst_ips": float(len(dst_ips)),
             "total_bytes": float(total_bytes),
-            "avg_bytes_per_pkt": round(float(total_bytes) / max(conn_count, 1), 2),
+            "avg_bytes_per_pkt": avg_bytes,
             "outbound_ratio": round(float(outbound_count) / max(conn_count, 1), 3),
-            "tcp_syn_ratio": round(float(syn_count) / max(conn_count, 1), 3),
+            "tcp_syn_ratio": syn_ratio,
             "sensitive_port_ratio": round(float(sensitive_count) / max(conn_count, 1), 3),
             "dns_query_ratio": round(float(dns_count) / max(conn_count, 1), 3),
             "payload_entropy": float(entropy)
@@ -225,6 +265,16 @@ class BehavioralAnomalyDetector:
                 anomaly_score, decision_score, is_anomaly = self._fallback_score(feature_dict)
         else:
             anomaly_score, decision_score, is_anomaly = self._fallback_score(feature_dict)
+
+        # Stateful Flood Calibration: when rolling window exhibits massive flood conditions
+        # (e.g., hundreds of SYN connections or multi-megabyte volumetric exhaustion),
+        # guarantee the anomaly score reflects the critical 90+ threat scale.
+        conn = feature_dict.get("conn_count", 0.0)
+        syn_r = feature_dict.get("tcp_syn_ratio", 0.0)
+        tot_b = feature_dict.get("total_bytes", 0.0)
+        if (conn >= 300 and syn_r >= 0.80) or tot_b >= (10 * 1024 * 1024) or (conn >= 1000):
+            anomaly_score = max(anomaly_score, 92)
+            is_anomaly = True
 
         # Compute top explainable feature deviations
         deviations = []

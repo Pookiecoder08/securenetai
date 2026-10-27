@@ -69,7 +69,13 @@ from security import verify_password, create_access_token, SECRET_KEY, ALGORITHM
 from auth import get_current_user, require_role
 import firewall
 import reports
-from nids_service import NIDSIngestionPipeline, EveJsonParser, ThreatClassifier
+from nids_service import (
+    NIDSIngestionPipeline,
+    EveJsonParser,
+    ThreatClassifier,
+    stateful_tracker,
+    StatefulTrafficTracker
+)
 from ml_service import ml_detector, FeatureExtractor, MODEL_FILE, METADATA_FILE
 from risk_and_response_service import (
     RiskScoringEngine,
@@ -207,11 +213,31 @@ def decode_ascii_payload(raw_bytes: bytes, max_len: int = 256) -> str:
     return "".join(chr(b) if 32 <= b <= 126 else "." for b in sample)
 
 
-def evaluate_threat_signatures(ascii_text: str, dst_port: Optional[int]) -> tuple[bool, Optional[str], Optional[str]]:
+def evaluate_threat_signatures(
+    ascii_text: str,
+    dst_port: Optional[int],
+    src_ip: Optional[str] = None,
+    stateful_metrics: Optional[Dict[str, Any]] = None
+) -> tuple[bool, Optional[str], Optional[str]]:
     """
-    Evaluates payload and connection metadata against attack signatures.
+    Evaluates payload and stateful connection metadata against attack signatures and deterministic rules.
     Returns: (is_threat, threat_type, severity)
     """
+    # 1. Native Stateful NIDS Rules (TCP SYN Flood, Volumetric Flood, Brute Force)
+    event_dict = {
+        "src_ip": src_ip or "0.0.0.0",
+        "dst_port": dst_port,
+        "protocol": "TCP" if dst_port in (80, 443, 22, 21, 3389) else "OTHER"
+    }
+    is_st_threat, st_cat, st_sev, _, _ = ThreatClassifier.classify_event(
+        event=event_dict,
+        payload_sample=ascii_text,
+        stateful_metrics=stateful_metrics
+    )
+    if is_st_threat:
+        return True, st_cat, st_sev
+
+    # 2. Application-layer Regex Signatures
     if SQLI_REGEX.search(ascii_text):
         return True, "SQL Injection (SQLi) Attempt", "Critical"
 
@@ -349,12 +375,28 @@ def process_packet_bytes(raw_data: bytes):
 
     payload_hex = format_hex_dump(payload_bytes, max_len=128)
     payload_ascii = decode_ascii_payload(payload_bytes, max_len=256)
+    tcp_flags = pkt[TCP].flags if pkt.haslayer(TCP) else None
 
-    # Signature Analysis
-    is_threat, threat_type, severity = evaluate_threat_signatures(payload_ascii, dst_port)
+    # Push packet into in-memory StatefulTrafficTracker 60s sliding window
+    stateful_metrics = stateful_tracker.record_packet(
+        src_ip=src_ip,
+        size=len(raw_data),
+        tcp_flags=tcp_flags,
+        dst_port=dst_port,
+        dst_ip=dst_ip,
+        protocol=protocol,
+        payload_sample=payload_ascii
+    )
+
+    # Signature & Stateful Traffic Analysis
+    is_threat, threat_type, severity = evaluate_threat_signatures(
+        ascii_text=payload_ascii,
+        dst_port=dst_port,
+        src_ip=src_ip,
+        stateful_metrics=stateful_metrics
+    )
 
     # Ingress Traffic Filter: Discard irrelevant background noise before counting or persistence
-    tcp_flags = pkt[TCP].flags if pkt.haslayer(TCP) else None
     if not is_packet_relevant(
         src_ip=src_ip,
         dst_ip=dst_ip,
@@ -385,18 +427,23 @@ def process_packet_bytes(raw_data: bytes):
         
         target_block_ip = src_ip if (src_ip and src_ip != host_ip) else (src_ip or "127.0.0.1")
         
-        # 1. AI Behavioral Anomaly Analysis on target host
-        features = FeatureExtractor.extract_from_packets([
-            {
-                "src_ip": src_ip,
-                "dst_ip": dst_ip,
-                "dst_port": dst_port,
-                "length": len(raw_data),
-                "protocol": protocol,
-                "direction": direction,
-                "payload_ascii": payload_ascii
-            }
-        ], host_ip=target_block_ip)
+        # 1. AI Behavioral Anomaly Analysis on target host using stateful 60s sliding window
+        rolling_packets = stateful_tracker.get_packets_for_ip(target_block_ip)
+        features = FeatureExtractor.extract_from_packets(
+            packets=rolling_packets or [
+                {
+                    "src_ip": src_ip,
+                    "dst_ip": dst_ip,
+                    "dst_port": dst_port,
+                    "length": len(raw_data),
+                    "protocol": protocol,
+                    "direction": direction,
+                    "payload_ascii": payload_ascii
+                }
+            ],
+            host_ip=target_block_ip,
+            tracker=stateful_tracker
+        )
         ai_result = ml_detector.analyze_host_traffic(target_block_ip, features)
         ai_anomaly_val = ai_result.get("anomaly_score", 40)
 
@@ -540,6 +587,28 @@ def db_saver_worker():
                     db.commit()
         except Exception:
             time.sleep(1)
+
+
+# -----------------------------------------------------------------------------
+# Scapy Sniffer Callback (Live Sniff Ingress Pipeline)
+# -----------------------------------------------------------------------------
+def scapy_packet_callback(pkt: Any):
+    """
+    Direct callback for live Scapy packet capture streams:
+    Usage: scapy.sniff(prn=scapy_packet_callback, store=False)
+    Dissects live Scapy packets, feeds into StatefulTrafficTracker, and evaluates threats.
+    """
+    try:
+        if IP in pkt:
+            raw_bytes = bytes(pkt[IP])
+            process_packet_bytes(raw_bytes)
+        elif hasattr(pkt, "haslayer") and pkt.haslayer(IP):
+            raw_bytes = bytes(pkt[IP])
+            process_packet_bytes(raw_bytes)
+        elif isinstance(pkt, bytes):
+            process_packet_bytes(pkt)
+    except Exception as e:
+        print(f"[Scapy Callback Error] {e}")
 
 
 # -----------------------------------------------------------------------------
@@ -1443,6 +1512,15 @@ async def get_sensor_status(
         "total_threat_detections": total_threat_detections,
         "filter_mode": capture_filter_mode
     }
+
+
+@app.get("/api/nids/traffic-tracker/{target_ip}")
+async def get_traffic_tracker_metrics(
+    target_ip: str,
+    current_user: User = Depends(get_current_user)
+):
+    """Returns real-time 60-second sliding window stateful metrics for target IP."""
+    return stateful_tracker.get_metrics(target_ip)
 
 
 # -----------------------------------------------------------------------------

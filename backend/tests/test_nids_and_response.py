@@ -10,7 +10,7 @@ BACKEND_DIR = os.path.dirname(CURRENT_DIR)
 if BACKEND_DIR not in sys.path:
     sys.path.insert(0, BACKEND_DIR)
 
-from nids_service import EveJsonParser, ThreatClassifier, NIDSIngestionPipeline
+from nids_service import EveJsonParser, ThreatClassifier, NIDSIngestionPipeline, StatefulTrafficTracker, stateful_tracker
 from ml_service import FeatureExtractor, ml_detector, BehavioralAnomalyDetector
 from risk_and_response_service import (
     RiskScoringEngine,
@@ -399,3 +399,169 @@ def test_rbac_unauthorized_manual_response(client):
     data_admin = response_admin.json()
     assert data_admin["success"] is True
     assert data_admin["is_simulated"] is True
+
+
+# ---------------------------------------------------------------------------
+# 6. STATEFUL NIDS: BRUTE-FORCE, SYN FLOOD & VOLUMETRIC DOS TESTS
+# ---------------------------------------------------------------------------
+
+def test_stateful_traffic_tracker_sliding_window_and_pruning():
+    tracker = StatefulTrafficTracker(window_seconds=60.0)
+    ip = "198.51.100.77"
+    now = 1000.0
+
+    # Add 10 SYN packets 50s ago
+    for _ in range(10):
+        tracker.record_packet(
+            src_ip=ip,
+            size=60,
+            tcp_flags="S",
+            dst_port=80,
+            protocol="TCP",
+            timestamp=now - 50.0
+        )
+
+    # Add 1 stale packet 70s ago (must be pruned)
+    tracker.record_packet(
+        src_ip=ip,
+        size=60,
+        tcp_flags="S",
+        dst_port=80,
+        protocol="TCP",
+        timestamp=now - 70.0
+    )
+
+    metrics = tracker.get_metrics(ip, now=now)
+    assert metrics["packets_in_window"] == 10
+    assert metrics["tcp_syn_ratio"] == 1.0
+    assert metrics["avg_bytes"] == 60.0
+
+
+def test_stateful_brute_force_detection():
+    tracker = StatefulTrafficTracker(window_seconds=60.0)
+    attacker_ip = "198.51.100.88"
+    now = 2000.0
+
+    # Simulate 25 SSH/RDP authentication connection attempts in window (> 20 threshold)
+    for i in range(25):
+        tracker.record_packet(
+            src_ip=attacker_ip,
+            size=74,
+            tcp_flags="S",
+            dst_port=22 if i % 2 == 0 else 3389,
+            protocol="TCP",
+            timestamp=now - (25 - i)
+        )
+
+    assert tracker.calculate_auth_connection_count(attacker_ip, now=now) == 25
+
+    event = {"src_ip": attacker_ip, "dst_port": 22, "protocol": "TCP"}
+    is_threat, category, severity, confidence, evidence = ThreatClassifier.classify_event(
+        event=event,
+        tracker=tracker
+    )
+
+    assert is_threat is True
+    assert category == "Brute-Force Authentication Attempt"
+    assert severity == "High"
+    assert "25 authentication attempts" in evidence
+
+
+def test_stateful_ddos_tcp_syn_flood_detection():
+    tracker = StatefulTrafficTracker(window_seconds=60.0)
+    flooder_ip = "198.51.100.99"
+    now = 3000.0
+
+    # Simulate 150 SYN packets in 1 second (> 100 pps, syn_ratio 1.0 > 80%, avg_bytes 54 < 100)
+    for i in range(150):
+        tracker.record_packet(
+            src_ip=flooder_ip,
+            size=54,
+            tcp_flags="S",
+            dst_port=80,
+            protocol="TCP",
+            timestamp=now - (0.5 * (150 - i) / 150)
+        )
+
+    pps = tracker.calculate_packets_per_second(flooder_ip, now=now)
+    syn_ratio = tracker.calculate_tcp_syn_ratio(flooder_ip, now=now)
+    metrics = tracker.get_metrics(flooder_ip, now=now)
+
+    assert pps > 100.0
+    assert syn_ratio > 0.80
+    assert metrics["avg_bytes"] < 100.0
+
+    event = {"src_ip": flooder_ip, "dst_port": 80, "protocol": "TCP"}
+    is_threat, category, severity, confidence, evidence = ThreatClassifier.classify_event(
+        event=event,
+        tracker=tracker
+    )
+
+    assert is_threat is True
+    assert category == "TCP SYN Flood (DDoS)"
+    assert severity == "Critical"
+
+
+def test_stateful_ddos_volumetric_flood_detection():
+    tracker = StatefulTrafficTracker(window_seconds=60.0)
+    attacker_ip = "198.51.100.111"
+    now = 4000.0
+
+    # Simulate 12 MB transmission in 1 second (> 10 MB/s bandwidth threshold)
+    chunk_size = 60000
+    for i in range(210):  # 210 * 60,000 bytes = 12.6 MB
+        tracker.record_packet(
+            src_ip=attacker_ip,
+            size=chunk_size,
+            tcp_flags="A",
+            dst_port=8000,
+            protocol="UDP",
+            timestamp=now - (0.8 * (210 - i) / 210)
+        )
+
+    metrics = tracker.get_metrics(attacker_ip, now=now)
+    assert metrics["bandwidth_bytes_per_sec"] > (10 * 1024 * 1024)
+
+    event = {"src_ip": attacker_ip, "dst_port": 8000, "protocol": "UDP"}
+    is_threat, category, severity, confidence, evidence = ThreatClassifier.classify_event(
+        event=event,
+        tracker=tracker
+    )
+
+    assert is_threat is True
+    assert category == "Volumetric DoS Attack"
+    assert severity == "Critical"
+
+
+def test_stateful_ml_feature_extraction_and_anomaly_score():
+    tracker = StatefulTrafficTracker(window_seconds=60.0)
+    target_ip = "198.51.100.122"
+    now = 5000.0
+
+    # Record 500 SYN packets in tracker
+    for i in range(500):
+        tracker.record_packet(
+            src_ip=target_ip,
+            size=60,
+            tcp_flags="S",
+            dst_port=80 + (i % 5),
+            dst_ip="192.168.1.10",
+            protocol="TCP",
+            timestamp=now - (0.5 * (500 - i) / 500)
+        )
+
+    features = FeatureExtractor.extract_from_packets(
+        packets=[],
+        host_ip=target_ip,
+        tracker=tracker
+    )
+
+    assert features["conn_count"] == 500.0
+    assert features["tcp_syn_ratio"] == 1.0
+    assert features["avg_bytes_per_pkt"] == 60.0
+
+    # Evaluate Isolation Forest behavioral anomaly detector
+    detector = BehavioralAnomalyDetector()
+    analysis = detector.analyze_host_traffic(target_ip, features)
+    assert analysis["is_anomaly"] is True
+    assert analysis["anomaly_score"] >= 90
