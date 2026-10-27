@@ -155,16 +155,16 @@ const Navbar = ({ onToggleSidebar, activePageName = 'Dashboard' }) => {
           <span className="font-bold text-blue-700 bg-white px-1.5 py-0.5 rounded border border-slate-200">{adapterIp}</span>
         </div>
 
-        {/* Real-Time Update Status (User Requirement: strictly "Updated - seconds ago" without flickering Live/Reconnecting badges) */}
-        <div className="flex items-center gap-2">
-          <div className="flex items-center gap-1.5 px-3 py-1.5 rounded-full bg-slate-100/90 text-slate-700 border border-slate-200 text-xs font-mono font-medium shadow-2xs">
-            <span className={`w-2 h-2 rounded-full ${isBackendOffline ? 'bg-rose-500 animate-pulse' : 'bg-emerald-500'}`}></span>
-            <Clock className="w-3.5 h-3.5 text-slate-400" />
-            <span>Updated {secondsAgo === 0 ? 'just now' : `${secondsAgo}s ago`}</span>
+        {/* Real-Time Update Status: fixed width and tabular-nums so header bar never shifts left/right */}
+        <div className="flex items-center shrink-0">
+          <div className="flex items-center gap-1.5 px-3 py-1.5 rounded-full bg-slate-100/90 text-slate-700 border border-slate-200 text-xs font-mono font-medium shadow-2xs w-[172px] min-w-[172px] max-w-[172px] justify-center tabular-nums whitespace-nowrap shrink-0">
+            <span className={`w-2 h-2 rounded-full shrink-0 ${isBackendOffline ? 'bg-rose-500 animate-pulse' : 'bg-emerald-500'}`}></span>
+            <Clock className="w-3.5 h-3.5 text-slate-400 shrink-0" />
+            <span className="tabular-nums whitespace-nowrap text-center">Updated {secondsAgo === 0 ? 'just now' : `${secondsAgo}s ago`}</span>
             {isBackendOffline && (
               <button
                 onClick={retryConnection}
-                className="ml-1 text-rose-600 font-bold hover:underline"
+                className="ml-1 text-rose-600 font-bold hover:underline shrink-0"
                 title="Click to reconnect backend"
               >
                 (Retry)

@@ -189,7 +189,13 @@ export const SOCProvider = ({ children }) => {
 
       // Hydrate server-calculated 60s continuous rate series
       if (data?.rolling_stats && Array.isArray(data.rolling_stats) && data.rolling_stats.length > 0) {
-        setRollingStats(data.rolling_stats);
+        setRollingStats((prev) => {
+          if (data.rolling_stats.length >= 60) {
+            return data.rolling_stats.slice(-60);
+          }
+          const missingCount = 60 - data.rolling_stats.length;
+          return [...prev.slice(0, missingCount), ...data.rolling_stats];
+        });
       }
 
       // Calculate packets per second from packet counter
@@ -242,7 +248,7 @@ export const SOCProvider = ({ children }) => {
       setSecondsAgo((prev) => prev + 1);
 
       // If server RATE_HEARTBEAT is active, rely strictly on server ground truth
-      if (Date.now() - lastHeartbeatTimeRef.current > 5000) {
+      if (Date.now() - lastHeartbeatTimeRef.current > 2000) {
         const now = new Date();
         const timeLabel = now.toLocaleTimeString([], { hour: '2-digit', minute: '2-digit', second: '2-digit' });
         const currentPps = packetsThisSecondRef.current;

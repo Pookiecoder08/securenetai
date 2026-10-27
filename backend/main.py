@@ -22,7 +22,7 @@ import asyncio
 import queue
 import json
 import struct
-from datetime import datetime
+from datetime import datetime, timedelta
 from collections import deque
 from typing import List, Dict, Any, Optional, Deque
 
@@ -126,6 +126,16 @@ current_pps = 0
 current_inbound_mbps = 0.0
 current_outbound_mbps = 0.0
 rolling_rate_history: Deque[Dict[str, Any]] = deque(maxlen=60)
+_init_now = datetime.utcnow()
+for _i in range(59, -1, -1):
+    _t = _init_now - timedelta(seconds=_i)
+    rolling_rate_history.append({
+        "time": _t.strftime("%H:%M:%S"),
+        "timestamp": _t.isoformat(),
+        "pps": 0,
+        "inboundMbps": 0.0,
+        "outboundMbps": 0.0
+    })
 _status_cache: Optional[Dict[str, Any]] = None
 _status_cache_time: float = 0.0
 
@@ -190,10 +200,10 @@ class ConnectionManager:
                         sanitized["payload_ascii"] = "[REDACTED - EMPLOYEE CLEARANCE]"
                     if "payload_hex" in sanitized:
                         sanitized["payload_hex"] = "[REDACTED - EMPLOYEE CLEARANCE]"
-                    await ws.send_json(sanitized)
+                    await asyncio.wait_for(ws.send_json(sanitized), timeout=0.8)
                 else:
-                    await ws.send_json(packet_data)
-            except (WebSocketDisconnect, RuntimeError, ConnectionResetError):
+                    await asyncio.wait_for(ws.send_json(packet_data), timeout=0.8)
+            except Exception:
                 dead_connections.append(ws)
 
         if dead_connections:

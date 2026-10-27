@@ -107,16 +107,9 @@ const Dashboard = ({ onInvestigatePacket }) => {
   // Current PPS (latest from 60-second rolling time-series or server status)
   const currentPps = (rollingStats.length > 0 ? rollingStats[rollingStats.length - 1].pps : 0) || status?.current_pps || 0;
 
-  // Real-time line graph starts when packets are inspected and continuous across tab switches
+  // Real-time continuous 60-second sliding time-series without arbitrary slicing (peaks and dips flow naturally)
   const chartStats = useMemo(() => {
-    if (!rollingStats || rollingStats.length === 0) return [];
-    const firstTrafficIdx = rollingStats.findIndex((p) => p.pps > 0 || p.inboundMbps > 0 || p.outboundMbps > 0);
-    if (firstTrafficIdx > 0) {
-      const startIdx = Math.max(0, firstTrafficIdx - 3);
-      const sliced = rollingStats.slice(startIdx);
-      return sliced.length >= 2 ? sliced : rollingStats.slice(-2);
-    }
-    return rollingStats;
+    return rollingStats || [];
   }, [rollingStats]);
 
   // Filtered Live Packets for Table (strictly capped at 10 to keep UI lightning fast)
