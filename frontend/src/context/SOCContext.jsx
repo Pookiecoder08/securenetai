@@ -491,26 +491,27 @@ export const SOCProvider = ({ children }) => {
           // ----------------------------------------------------
 
           if (msg.is_threat) {
-            addToast({
-              title:
-                msg.threat_type ||
-                'Malicious Intrusion Detected',
+            const rawSev = (msg.severity || 'Medium').toLowerCase();
+            // User requirement: small threats are blocked automatically and the admin is not disturbed continuously.
+            // Only pop up high-priority toasts for Critical and High severity intrusions.
+            if (rawSev === 'critical' || rawSev === 'high') {
+              addToast({
+                title:
+                  msg.threat_type ||
+                  'Malicious Intrusion Detected',
 
-              severity:
-                (
-                  msg.severity ||
-                  'Critical'
-                ).toLowerCase(),
+                severity: rawSev,
 
-              description:
-                `${msg.src_ip} targeted ` +
-                `${msg.dst_ip}:` +
-                `${msg.dst_port || 'n/a'} ` +
-                `via ${msg.protocol}.`,
+                description:
+                  `${msg.src_ip} targeted ` +
+                  `${msg.dst_ip}:` +
+                  `${msg.dst_port || 'n/a'} ` +
+                  `via ${msg.protocol}.`,
 
-              source_ip: msg.src_ip,
-              packet: msg
-            });
+                source_ip: msg.src_ip,
+                packet: msg
+              });
+            }
 
             // -----------------------------------------------
             // ADD THREAT TO THREAT LIST

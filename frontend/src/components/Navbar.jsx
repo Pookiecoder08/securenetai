@@ -1,4 +1,4 @@
-   import React, { useState } from 'react';
+import React, { useState } from 'react';
 import { useAuth } from '../context/AuthContext';
 import { useSOC } from '../context/SOCContext';
 import {
@@ -10,6 +10,8 @@ import {
   Wifi,
   Clock,
   RefreshCw,
+  RotateCcw,
+  Filter,
   Menu,
   ChevronRight,
   AlertTriangle,
@@ -17,7 +19,7 @@ import {
 } from 'lucide-react';
 
 const Navbar = ({ onToggleSidebar, activePageName = 'Dashboard' }) => {
-  const { user, role, logout } = useAuth();
+  const { user, role, logout, isEmployee } = useAuth();
   const {
     status,
     connectionState,
@@ -26,10 +28,41 @@ const Navbar = ({ onToggleSidebar, activePageName = 'Dashboard' }) => {
     isPaused,
     setIsPaused,
     retryConnection,
-    isBackendOffline
+    isBackendOffline,
+    refreshPersistedData,
+    fetchTelemetry,
+    setFilterMode,
+    resetSession
   } = useSOC();
 
   const [showAlertDrawer, setShowAlertDrawer] = useState(false);
+  const [isRefreshing, setIsRefreshing] = useState(false);
+  const [isResetting, setIsResetting] = useState(false);
+
+  const handleRefresh = async () => {
+    setIsRefreshing(true);
+    try {
+      if (refreshPersistedData) await refreshPersistedData();
+      if (fetchTelemetry) await fetchTelemetry();
+      window.dispatchEvent(new CustomEvent('soc:refresh'));
+    } catch (e) {
+      console.error('Refresh error:', e);
+    } finally {
+      setTimeout(() => setIsRefreshing(false), 500);
+    }
+  };
+
+  const handleResetSession = async () => {
+    if (isEmployee || isResetting || !resetSession) return;
+    setIsResetting(true);
+    try {
+      await resetSession(true);
+    } catch (e) {
+      console.error('Reset error:', e);
+    } finally {
+      setIsResetting(false);
+    }
+  };
 
   const getDisplayName = () => {
     if (user === 'admin') return 'Alex Vance';
@@ -69,10 +102,52 @@ const Navbar = ({ onToggleSidebar, activePageName = 'Dashboard' }) => {
           <ChevronRight className="w-3.5 h-3.5 text-slate-300" />
           <span className="font-bold text-slate-900 font-sans text-sm">{activePageName}</span>
         </div>
+
+        {/* Dashboard Quick Mode Switcher & Reset */}
+        {activePageName === 'Dashboard' && !isEmployee && (
+          <div className="hidden lg:flex items-center gap-2 ml-2 pl-3 border-l border-slate-200">
+            <div className="flex items-center bg-slate-100 p-0.5 rounded-lg border border-slate-200">
+              <Filter className="w-3 h-3 text-slate-400 ml-1.5 mr-1" />
+              {['soc_filtered', 'targeted', 'raw_all'].map((mode) => (
+                <button
+                  key={mode}
+                  onClick={() => setFilterMode(mode)}
+                  className={`px-2 py-0.5 rounded text-[10px] font-bold font-mono transition-all ${
+                    (status?.capture_filter_mode || 'soc_filtered') === mode
+                      ? 'bg-white text-blue-700 shadow-2xs border border-slate-200'
+                      : 'text-slate-600 hover:text-slate-900'
+                  }`}
+                >
+                  {mode === 'soc_filtered' ? 'Filtered' : mode === 'targeted' ? 'Targeted' : 'Raw'}
+                </button>
+              ))}
+            </div>
+            <button
+              onClick={handleResetSession}
+              disabled={isResetting}
+              className="flex items-center gap-1 px-2 py-1 rounded-lg bg-white border border-slate-200 hover:bg-slate-50 text-slate-700 font-mono font-semibold text-[11px] transition-all shadow-2xs disabled:opacity-50"
+              title="Reset session telemetry counters"
+            >
+              <RotateCcw className={`w-3 h-3 text-blue-600 ${isResetting ? 'animate-spin' : ''}`} />
+              <span>Reset</span>
+            </button>
+          </div>
+        )}
       </div>
 
-      {/* Center / Right: Connection Badge, Clock, Adapter, User Profile */}
+      {/* Center / Right: Connection Badge, Clock, Refresh, Adapter, User Profile */}
       <div className="flex items-center gap-3 sm:gap-4">
+        {/* Universal Refresh Button */}
+        <button
+          onClick={handleRefresh}
+          disabled={isRefreshing}
+          className="flex items-center gap-1.5 px-2.5 py-1.5 rounded-lg bg-slate-100 hover:bg-slate-200 text-slate-700 text-xs font-mono font-semibold transition-all border border-slate-200 shadow-2xs"
+          title="Refresh All Telemetry & Kernel Records"
+        >
+          <RefreshCw className={`w-3.5 h-3.5 text-blue-600 ${isRefreshing ? 'animate-spin' : ''}`} />
+          <span className="hidden sm:inline">Refresh</span>
+        </button>
+
         {/* Adapter & IP Info */}
         <div className="hidden md:flex items-center gap-2 px-3 py-1.5 rounded-lg bg-slate-100/80 border border-slate-200 text-xs font-mono text-slate-600">
           <Wifi className="w-3.5 h-3.5 text-slate-500" />

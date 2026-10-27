@@ -283,12 +283,6 @@ class APIClient {
     });
   }
 
-  async injectThreat(threat_type, target_ip = '10.0.1.10', attacker_ip = '198.51.100.77') {
-    return await this.request('/api/test/inject-threat', {
-      method: 'POST',
-      body: JSON.stringify({ threat_type, target_ip, attacker_ip })
-    });
-  }
 }
 
 

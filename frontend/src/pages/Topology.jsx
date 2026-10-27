@@ -289,37 +289,19 @@ const Topology = () => {
   return (
     <div className="p-4 sm:p-6 space-y-4 flex flex-col h-[calc(100vh-4rem)] max-w-7xl mx-auto">
       {/* Top Controls Bar */}
-      <div className="soc-card rounded-2xl p-4 bg-white flex flex-col sm:flex-row sm:items-center justify-between gap-4 border border-slate-200 shadow-2xs">
-        <div>
-          <h1 className="text-base font-bold text-slate-900 font-sans flex items-center gap-2">
-            <Network className="w-5 h-5 text-blue-600" />
-            Enterprise Network Architecture Topology
-          </h1>
-          <p className="text-xs text-slate-500 font-mono mt-0.5">
-            {isAdmin ? (
-              <span className="text-blue-700 font-bold flex items-center gap-1">
-                <Edit3 className="w-3.5 h-3.5" /> Administrator Mode: Full Drag, Node Creation &amp; Edge Editing
-              </span>
-            ) : (
-              <span className="text-slate-500 flex items-center gap-1">
-                <Lock className="w-3.5 h-3.5 text-slate-400" /> Read-Only Mode: Architecture modifications restricted to Administrators
-              </span>
-            )}
-          </p>
+      <div className="flex items-center justify-between gap-2 flex-wrap text-xs font-mono pb-2">
+        <div className="relative">
+          <Search className="w-3.5 h-3.5 text-slate-400 absolute left-3 top-1/2 -translate-y-1/2" />
+          <input
+            type="text"
+            placeholder="Filter assets..."
+            value={searchTerm}
+            onChange={(e) => setSearchTerm(e.target.value)}
+            className="pl-8 pr-3 py-1.5 bg-slate-50 border border-slate-200 rounded-xl text-xs font-mono text-slate-800 focus:outline-none focus:border-blue-600 w-44"
+          />
         </div>
 
-        <div className="flex items-center gap-2 flex-wrap text-xs font-mono">
-          <div className="relative">
-            <Search className="w-3.5 h-3.5 text-slate-400 absolute left-3 top-1/2 -translate-y-1/2" />
-            <input
-              type="text"
-              placeholder="Filter assets..."
-              value={searchTerm}
-              onChange={(e) => setSearchTerm(e.target.value)}
-              className="pl-8 pr-3 py-1.5 bg-slate-50 border border-slate-200 rounded-xl text-xs font-mono text-slate-800 focus:outline-none focus:border-blue-600 w-44"
-            />
-          </div>
-
+        <div className="flex items-center gap-2">
           <button
             onClick={loadTopologyFromBackend}
             className="px-3 py-1.5 rounded-xl bg-white border border-slate-200 hover:bg-slate-50 text-slate-700 font-semibold transition-all flex items-center gap-1.5 shadow-2xs"

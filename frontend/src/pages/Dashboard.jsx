@@ -71,9 +71,7 @@ const Dashboard = ({ onInvestigatePacket }) => {
   } = useSOC();
 
   const [activeProtoFilter, setActiveProtoFilter] = useState('ALL');
-  const [injecting, setInjecting] = useState(false);
   const [isResetting, setIsResetting] = useState(false);
-  const [showLiveFireModal, setShowLiveFireModal] = useState(false);
 
   // 1. Core Live Metric Calculations (Strictly from real backend status & persisted telemetry)
   const totalPackets = status?.total_packets_captured ?? status?.packet_counter ?? 0;
@@ -139,99 +137,11 @@ const Dashboard = ({ onInvestigatePacket }) => {
     }
   };
 
-  // Live Fire Attack Test Trigger
-  const handleLiveFireTest = async (type) => {
-    if (isEmployee) return;
-    setInjecting(true);
-    try {
-      await apiClient.injectThreat(type, '10.0.1.10', '198.51.100.77');
-      refreshPersistedData();
-    } catch (e) {
-      console.error('Test injection error:', e);
-    } finally {
-      setInjecting(false);
-    }
-  };
-
   const hasTrafficData = rollingStats.some((p) => p.pps > 0 || p.inboundMbps > 0 || p.outboundMbps > 0);
 
   return (
     <div className="p-4 sm:p-6 space-y-6 max-w-7xl mx-auto">
-      {/* 1. Concise System Health Summary Bar */}
-      <div className="soc-card rounded-2xl p-4 bg-white flex flex-col md:flex-row md:items-center justify-between gap-4 border border-slate-200 shadow-2xs">
-        <div className="flex items-center gap-3">
-          <div
-            className={`p-2.5 rounded-xl border ${
-              snifferRunning
-                ? 'bg-emerald-50 border-emerald-200 text-emerald-700'
-                : 'bg-rose-50 border-rose-200 text-rose-700'
-            }`}
-          >
-            <Activity className="w-5 h-5" />
-          </div>
-          <div>
-            <div className="flex items-center gap-2">
-              <h2 className="text-sm font-bold text-slate-900 font-sans">
-                Sensor: {snifferRunning ? 'Promiscuous Sniffer Active' : 'Sensor Offline'}
-              </h2>
-              <span className="px-2 py-0.5 rounded text-[10px] font-mono font-bold bg-slate-100 text-slate-700 border border-slate-200">
-                Mode: {currentFilterMode}
-              </span>
-            </div>
-            <p className="text-xs text-slate-500 font-mono mt-0.5">
-              Adapter: <span className="font-semibold text-slate-800">{adapterName}</span> ({adapterIp})
-            </p>
-          </div>
-        </div>
-
-        <div className="flex items-center gap-3 flex-wrap text-xs font-mono">
-          {/* Mode Switcher */}
-          {!isEmployee && (
-            <div className="flex items-center bg-slate-100 p-1 rounded-lg border border-slate-200">
-              <Filter className="w-3.5 h-3.5 text-slate-400 ml-1.5 mr-1" />
-              {['soc_filtered', 'targeted', 'raw_all'].map((mode) => (
-                <button
-                  key={mode}
-                  onClick={() => handleModeSwitch(mode)}
-                  className={`px-2 py-1 rounded text-[10px] font-bold transition-all ${
-                    currentFilterMode === mode
-                      ? 'bg-white text-blue-700 shadow-2xs border border-slate-200'
-                      : 'text-slate-600 hover:text-slate-900'
-                  }`}
-                >
-                  {mode === 'soc_filtered' ? 'Filtered' : mode === 'targeted' ? 'Targeted' : 'Raw'}
-                </button>
-              ))}
-            </div>
-          )}
-
-          {/* Reset Session */}
-          {!isEmployee && (
-            <button
-              onClick={handleReset}
-              disabled={isResetting}
-              className="flex items-center gap-1.5 px-3 py-1.5 rounded-lg bg-white border border-slate-200 hover:bg-slate-50 text-slate-700 font-semibold transition-all shadow-2xs disabled:opacity-50"
-              title="Reset session telemetry counters"
-            >
-              <RotateCcw className={`w-3.5 h-3.5 text-blue-600 ${isResetting ? 'animate-spin' : ''}`} />
-              <span>Reset Session</span>
-            </button>
-          )}
-
-          {/* Controlled Live Fire Action */}
-          {!isEmployee && (
-            <button
-              onClick={() => setShowLiveFireModal(true)}
-              className="flex items-center gap-1.5 px-3 py-1.5 rounded-lg bg-blue-600 hover:bg-blue-500 text-white font-semibold transition-all shadow-2xs"
-            >
-              <Terminal className="w-3.5 h-3.5" />
-              <span>Live Fire Test</span>
-            </button>
-          )}
-        </div>
-      </div>
-
-      {/* 2. Comprehensive Operational Metric Cards */}
+      {/* Comprehensive Operational Metric Cards */}
       <div className="grid grid-cols-2 lg:grid-cols-6 gap-3 sm:gap-4">
         {/* Total Events */}
         <div className="soc-card soc-card-hover rounded-2xl p-4 bg-white border border-slate-200 shadow-2xs">
@@ -246,7 +156,6 @@ const Dashboard = ({ onInvestigatePacket }) => {
           <div className="text-xl font-extrabold text-slate-900 font-mono truncate">
             {totalEvents.toLocaleString()}
           </div>
-          <p className="text-[10px] text-slate-400 font-mono mt-0.5 truncate">Raw packets & NIDS frames</p>
         </div>
 
         {/* Observed Devices */}
@@ -262,7 +171,6 @@ const Dashboard = ({ onInvestigatePacket }) => {
           <div className="text-xl font-extrabold text-slate-900 font-mono">
             {observedDevicesCount}
           </div>
-          <p className="text-[10px] text-slate-400 font-mono mt-0.5 truncate">Active network endpoints</p>
         </div>
 
         {/* Threats Detected */}
@@ -278,7 +186,6 @@ const Dashboard = ({ onInvestigatePacket }) => {
           <div className="text-xl font-extrabold text-rose-600 font-mono">
             {totalThreats.toLocaleString()}
           </div>
-          <p className="text-[10px] text-slate-400 font-mono mt-0.5 truncate">Confirmed signatures & probes</p>
         </div>
 
         {/* Pending Approvals */}
@@ -294,7 +201,6 @@ const Dashboard = ({ onInvestigatePacket }) => {
           <div className="text-xl font-extrabold text-amber-600 font-mono">
             {pendingDecisionsCount}
           </div>
-          <p className="text-[10px] text-slate-400 font-mono mt-0.5 truncate">Decisions awaiting review</p>
         </div>
 
         {/* Active Restrictions */}
@@ -310,9 +216,6 @@ const Dashboard = ({ onInvestigatePacket }) => {
           <div className="text-xl font-extrabold text-slate-900 font-mono">
             {activeRestrictionsCount}
           </div>
-          <p className="text-[10px] text-slate-400 font-mono mt-0.5 truncate">
-            {isSimulationMode ? 'Simulated & ACL drops' : 'Kernel drops enforced'}
-          </p>
         </div>
 
         {/* Current PPS */}
@@ -328,7 +231,6 @@ const Dashboard = ({ onInvestigatePacket }) => {
           <div className="text-xl font-extrabold text-slate-900 font-mono">
             {currentPps} <span className="text-xs font-normal text-slate-400">pps</span>
           </div>
-          <p className="text-[10px] text-slate-400 font-mono mt-0.5 truncate">Current throughput</p>
         </div>
       </div>
 
@@ -338,12 +240,9 @@ const Dashboard = ({ onInvestigatePacket }) => {
         {/* 60-Second Packets Per Second Chart */}
         <div className="lg:col-span-2 soc-card rounded-2xl p-5 bg-white flex flex-col justify-between">
           <div className="flex items-center justify-between mb-4 pb-3 border-b border-slate-100">
-            <div>
-              <h3 className="text-sm font-bold text-slate-900 font-mono uppercase tracking-wider">
-                60-Second Ingress Rate (PPS)
-              </h3>
-              <p className="text-xs text-slate-500 font-mono">Real packet rate captured every second</p>
-            </div>
+            <h3 className="text-sm font-bold text-slate-900 font-mono uppercase tracking-wider">
+              60-Second Ingress Rate (PPS)
+            </h3>
             <span className="text-xs font-mono font-bold text-blue-700 bg-blue-50 px-2.5 py-1 rounded-lg border border-blue-200">
               {currentPps} pps
             </span>
@@ -353,10 +252,7 @@ const Dashboard = ({ onInvestigatePacket }) => {
             {!hasTrafficData && (
               <div className="absolute inset-0 flex flex-col items-center justify-center bg-slate-50/80 rounded-xl border border-dashed border-slate-200 z-10 p-4">
                 <Radio className="w-6 h-6 text-slate-400 mb-2" />
-                <span className="text-xs font-bold text-slate-700 font-mono">Awaiting Live Network Traffic</span>
-                <span className="text-[11px] text-slate-500 font-mono text-center mt-0.5">
-                  Send traffic or use Live Fire Test to generate real packet ingress.
-                </span>
+                <span className="text-xs font-bold text-slate-700 font-mono">Awaiting Network Traffic</span>
               </div>
             )}
             <ResponsiveContainer width="100%" height="100%">
@@ -385,7 +281,6 @@ const Dashboard = ({ onInvestigatePacket }) => {
             <h3 className="text-sm font-bold text-slate-900 font-mono uppercase tracking-wider">
               Protocol Breakdown
             </h3>
-            <p className="text-xs text-slate-500 font-mono">Distribution from live stream</p>
           </div>
 
           <div className="h-64 flex flex-col items-center justify-center relative">
@@ -435,12 +330,9 @@ const Dashboard = ({ onInvestigatePacket }) => {
         {/* Real Inbound vs Outbound Throughput (Mbps) */}
         <div className="lg:col-span-2 soc-card rounded-2xl p-5 bg-white">
           <div className="flex items-center justify-between mb-4 pb-3 border-b border-slate-100">
-            <div>
-              <h3 className="text-sm font-bold text-slate-900 font-mono uppercase tracking-wider">
-                Throughput Utilization (Mbps)
-              </h3>
-              <p className="text-xs text-slate-500 font-mono">Calculated from actual packet payload sizes</p>
-            </div>
+            <h3 className="text-sm font-bold text-slate-900 font-mono uppercase tracking-wider">
+              Throughput Utilization (Mbps)
+            </h3>
           </div>
           <div className="h-60 w-full">
             <ResponsiveContainer width="100%" height="100%">
@@ -503,15 +395,32 @@ const Dashboard = ({ onInvestigatePacket }) => {
       {/* 5. Live Packet Activity Table */}
       <div className="soc-card rounded-2xl p-5 bg-white space-y-4">
         <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-3 pb-3 border-b border-slate-100">
-          <div>
-            <h3 className="text-sm font-bold text-slate-900 font-mono uppercase tracking-wider flex items-center gap-2">
-              <Radio className={`w-4 h-4 ${isPaused ? 'text-slate-400' : 'text-blue-600'}`} />
-              Live Ingress Packet Buffer ({displayedPackets.length})
-            </h3>
-            <p className="text-xs text-slate-500 font-mono">Real-time NIC packet dissection queue</p>
-          </div>
+          <h3 className="text-sm font-bold text-slate-900 font-mono uppercase tracking-wider flex items-center gap-2">
+            <Radio className={`w-4 h-4 ${isPaused ? 'text-slate-400' : 'text-blue-600'}`} />
+            Live Ingress Packet Buffer ({displayedPackets.length})
+          </h3>
 
           <div className="flex items-center gap-2 flex-wrap text-xs font-mono">
+            {/* Capture Mode (Mobile/Responsive fallback) */}
+            {!isEmployee && (
+              <div className="flex lg:hidden items-center bg-slate-100 p-0.5 rounded-lg border border-slate-200">
+                <Filter className="w-3 h-3 text-slate-400 ml-1.5 mr-1" />
+                {['soc_filtered', 'targeted', 'raw_all'].map((mode) => (
+                  <button
+                    key={mode}
+                    onClick={() => handleModeSwitch(mode)}
+                    className={`px-2 py-0.5 rounded text-[10px] font-bold transition-all ${
+                      currentFilterMode === mode
+                        ? 'bg-white text-blue-700 shadow-2xs border border-slate-200'
+                        : 'text-slate-600 hover:text-slate-900'
+                    }`}
+                  >
+                    {mode === 'soc_filtered' ? 'Filtered' : mode === 'targeted' ? 'Targeted' : 'Raw'}
+                  </button>
+                ))}
+              </div>
+            )}
+
             {/* Filter Protocol Chips */}
             <div className="flex items-center bg-slate-100 p-1 rounded-lg border border-slate-200">
               {['ALL', 'TCP', 'UDP', 'HTTP', 'HTTPS', 'DNS'].map((proto) => (
@@ -640,57 +549,6 @@ const Dashboard = ({ onInvestigatePacket }) => {
         </div>
       </div>
 
-      {/* Controlled Live Fire Attack Test Modal */}
-      {showLiveFireModal && (
-        <div className="fixed inset-0 z-50 flex items-center justify-center p-4 bg-slate-900/40 backdrop-blur-xs">
-          <div className="bg-white border border-slate-200 rounded-2xl shadow-xl max-w-md w-full p-6 space-y-4">
-            <div className="flex items-center justify-between pb-3 border-b border-slate-100">
-              <div className="flex items-center gap-2">
-                <Terminal className="w-5 h-5 text-blue-600" />
-                <h3 className="text-sm font-bold text-slate-900 font-mono">
-                  Controlled Attack Test Harness
-                </h3>
-              </div>
-              <button
-                onClick={() => setShowLiveFireModal(false)}
-                className="text-slate-400 hover:text-slate-600"
-              >
-                &times;
-              </button>
-            </div>
-
-            <p className="text-xs text-slate-600 font-sans leading-relaxed">
-              Dispatches authentic attack signature payloads through Scapy DPI to test NIDS detection and automatic kernel firewall drop rules.
-            </p>
-
-            <div className="space-y-3 font-mono text-xs">
-              <button
-                onClick={() => handleLiveFireTest('sqli')}
-                disabled={injecting}
-                className="w-full p-3 rounded-xl bg-rose-50 hover:bg-rose-100 border border-rose-200 text-rose-800 font-bold text-left transition-all flex items-center justify-between"
-              >
-                <div>
-                  <div className="text-xs font-bold">1. Dispatch SQL Injection (SQLi)</div>
-                  <div className="text-[10px] text-rose-600 font-normal">UNION SELECT payload signature</div>
-                </div>
-                <Zap className="w-4 h-4 text-rose-600" />
-              </button>
-
-              <button
-                onClick={() => handleLiveFireTest('xss')}
-                disabled={injecting}
-                className="w-full p-3 rounded-xl bg-amber-50 hover:bg-amber-100 border border-amber-200 text-amber-800 font-bold text-left transition-all flex items-center justify-between"
-              >
-                <div>
-                  <div className="text-xs font-bold">2. Dispatch Cross-Site Scripting (XSS)</div>
-                  <div className="text-[10px] text-amber-600 font-normal">&lt;script&gt; payload signature</div>
-                </div>
-                <Zap className="w-4 h-4 text-amber-600" />
-              </button>
-            </div>
-          </div>
-        </div>
-      )}
     </div>
   );
 };

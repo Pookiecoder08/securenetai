@@ -821,92 +821,24 @@ async def startup_event():
 # Real-World Live Fire Attacker Demonstration Endpoints (Method 1)
 # -----------------------------------------------------------------------------
 @app.get("/login")
-async def live_fire_login_attack(
+@app.post("/login")
+async def login_endpoint(
     request: Request,
     user: Optional[str] = Query(None),
     username: Optional[str] = Query(None)
 ):
-    """
-    Live Fire Attacker Endpoint:
-    Allows demonstrating Method 1 from an external terminal or partner laptop:
-      curl "http://<TARGET_IP>:8000/login?user=admin' OR 1=1--"
-    The raw HTTP packet physically hits the NIC, the sniffer decodes it, flags SQLi,
-    and the OS firewall blocks the attacker IP immediately!
-    """
-    query_param = user or username or ""
-    client_ip = request.client.host if request.client else "127.0.0.1"
-
-    # Evaluate signature directly for defensive terminal response
-    if SQLI_REGEX.search(query_param):
-        print(f"[LIVE FIRE ATTACK INTERCEPTED] SQL Injection payload received from {client_ip}: '{query_param}'")
-        # Direct integration into Scapy DPI pipeline so WebSocket & Dashboard capture the live attack frame
-        try:
-            client_port = request.client.port if (request.client and request.client.port) else 54321
-            host_ip = selected_interface_info.get("ip", "127.0.0.1")
-            raw_payload = f"GET /login?user={query_param} HTTP/1.1\r\nHost: {host_ip}:8000\r\nUser-Agent: AttackerTerminal/1.0\r\nAccept: */*\r\n\r\n".encode("utf-8")
-            test_pkt = (
-                IP(src=client_ip, dst=host_ip)
-                / TCP(sport=client_port, dport=8000)
-                / Raw(load=raw_payload)
-            )
-            process_packet_bytes(bytes(test_pkt))
-        except Exception as e:
-            print(f"[Live Fire Pipeline Error] {e}")
-
-        return JSONResponse(
-            status_code=403,
-            content={
-                "error": "INTRUSION_DETECTED",
-                "message": "SecureNet NIDS has intercepted a malicious SQL Injection pattern in query parameters.",
-                "signature": "SQLi Auth Bypass / UNION SELECT",
-                "action": f"OS Firewall drop rule enforced against {client_ip}"
-            }
-        )
-
+    """Authentication status check endpoint."""
     return {"status": "ok", "message": "Authentication endpoint reached."}
 
 
 @app.get("/api/data")
-async def live_fire_xss_attack(
+async def live_data_endpoint(
     request: Request,
     search: Optional[str] = Query(None),
     q: Optional[str] = Query(None)
 ):
-    """
-    Live Fire Attacker Endpoint:
-    Allows demonstrating Method 1 XSS attacks:
-      curl "http://<TARGET_IP>:8000/api/data?search=<script>alert('XSS')</script>"
-    The packet hits the NIC, triggers XSS detection, updates dashboard, and blocks IP!
-    """
+    """Realtime data retrieval endpoint."""
     query_param = search or q or ""
-    client_ip = request.client.host if request.client else "127.0.0.1"
-
-    if XSS_REGEX.search(query_param):
-        print(f"[LIVE FIRE ATTACK INTERCEPTED] XSS payload received from {client_ip}: '{query_param}'")
-        # Direct integration into Scapy DPI pipeline so WebSocket & Dashboard capture the live attack frame
-        try:
-            client_port = request.client.port if (request.client and request.client.port) else 54321
-            host_ip = selected_interface_info.get("ip", "127.0.0.1")
-            raw_payload = f"GET /api/data?search={query_param} HTTP/1.1\r\nHost: {host_ip}:8000\r\nUser-Agent: AttackerTerminal/1.0\r\nAccept: */*\r\n\r\n".encode("utf-8")
-            test_pkt = (
-                IP(src=client_ip, dst=host_ip)
-                / TCP(sport=client_port, dport=8000)
-                / Raw(load=raw_payload)
-            )
-            process_packet_bytes(bytes(test_pkt))
-        except Exception as e:
-            print(f"[Live Fire Pipeline Error] {e}")
-
-        return JSONResponse(
-            status_code=403,
-            content={
-                "error": "INTRUSION_DETECTED",
-                "message": "SecureNet NIDS has intercepted a Cross-Site Scripting (XSS) payload in query parameters.",
-                "signature": "XSS Script Injection",
-                "action": f"OS Firewall drop rule enforced against {client_ip}"
-            }
-        )
-
     return {"status": "ok", "query": query_param, "results": []}
 
 
@@ -925,12 +857,6 @@ class UnblockRequest(BaseModel):
 class TopologyPayload(BaseModel):
     nodes: List[Dict[str, Any]]
     edges: List[Dict[str, Any]]
-
-
-class ThreatInjectionPayload(BaseModel):
-    threat_type: str  # 'sqli', 'xss', or 'probe'
-    target_ip: Optional[str] = "10.0.1.10"
-    attacker_ip: Optional[str] = "198.51.100.77"
 
 
 class FilterModePayload(BaseModel):
@@ -1352,46 +1278,6 @@ async def reset_telemetry_session(
         "purged_records": purged_count,
         "total_packets_captured": 0,
         "total_threats_detected": 0
-    }
-
-
-@app.post("/api/test/inject-threat")
-async def inject_threat_packet(
-    payload: ThreatInjectionPayload,
-    current_user: User = Depends(require_role(["admin", "analyst"]))
-):
-    """
-    Demonstration Test Harness:
-    Constructs a real Scapy IP packet with attack signature (SQLi or XSS)
-    and passes it directly through the real Scapy DPI and Threat Detection pipeline.
-    """
-    attack_str = ""
-    target_port = 80
-
-    if payload.threat_type.lower() == "sqli":
-        attack_str = "GET /login?user=admin' UNION SELECT null, username, password FROM users-- HTTP/1.1\r\nHost: target\r\n\r\n"
-        target_port = 80
-    elif payload.threat_type.lower() == "xss":
-        attack_str = "POST /api/data HTTP/1.1\r\nHost: target\r\nContent-Length: 42\r\n\r\n<script>alert('XSS_BREACH')</script>"
-        target_port = 8080
-    else:  # Probe
-        attack_str = "NMAP RECON SCANNER PROBE SYN TEST"
-        target_port = 31337
-
-    test_pkt = (
-        IP(src=payload.attacker_ip, dst=payload.target_ip)
-        / TCP(sport=54321, dport=target_port)
-        / Raw(load=attack_str.encode("utf-8"))
-    )
-
-    process_packet_bytes(bytes(test_pkt))
-
-    return {
-        "message": "Threat packet dispatched through Scapy DPI & Signature Engine.",
-        "threat_type": payload.threat_type,
-        "attacker_ip": payload.attacker_ip,
-        "target_ip": payload.target_ip,
-        "payload_snippet": attack_str
     }
 
 

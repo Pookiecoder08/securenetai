@@ -34,18 +34,6 @@ const Sidebar = ({ isOpen, onClose }) => {
       show: true
     },
     {
-      to: '/ai-analysis',
-      label: 'AI Analysis',
-      icon: Cpu,
-      show: true
-    },
-    {
-      to: '/response',
-      label: 'Automated Response',
-      icon: Zap,
-      show: !isEmployee
-    },
-    {
       to: '/packets',
       label: 'Packet Analysis',
       icon: Binary,

@@ -59,16 +59,15 @@ const ThreatMonitor = () => {
   // Filtering
   const filteredThreats = useMemo(() => {
     return combinedThreats.filter((t) => {
-      const type = (t.threat_type || '').toLowerCase();
-      if (activeTab === 'SQLi' && !type.includes('sql')) return false;
-      if (activeTab === 'XSS' && !type.includes('xss')) return false;
-      if (activeTab === 'Probe' && !type.includes('probe')) return false;
+      const sev = (t.severity || 'Medium').toUpperCase();
+      if (activeTab !== 'ALL' && sev !== activeTab) return false;
       if (searchTerm) {
         const q = searchTerm.toLowerCase();
         return (
           (t.src_ip || '').toLowerCase().includes(q) ||
           (t.dst_ip || '').toLowerCase().includes(q) ||
-          type.includes(q)
+          (t.threat_type || '').toLowerCase().includes(q) ||
+          (t.attack_category || '').toLowerCase().includes(q)
         );
       }
       return true;
@@ -88,33 +87,13 @@ const ThreatMonitor = () => {
     }
   };
 
-  const sqliCount = combinedThreats.filter((t) => (t.threat_type || '').toLowerCase().includes('sql')).length;
-  const xssCount = combinedThreats.filter((t) => (t.threat_type || '').toLowerCase().includes('xss')).length;
-  const probeCount = combinedThreats.filter((t) => (t.threat_type || '').toLowerCase().includes('probe')).length;
+  const totalDetected = combinedThreats.length;
+  const criticalCount = combinedThreats.filter((t) => (t.severity || '').toLowerCase() === 'critical').length;
+  const highCount = combinedThreats.filter((t) => (t.severity || '').toLowerCase() === 'high').length;
+  const minorCount = combinedThreats.filter((t) => ['low', 'medium'].includes((t.severity || '').toLowerCase())).length;
 
   return (
     <div className="p-4 sm:p-6 space-y-6 max-w-7xl mx-auto">
-      {/* Header Bar */}
-      <div className="soc-card rounded-2xl p-4 bg-white flex flex-col sm:flex-row sm:items-center justify-between gap-4 border border-slate-200 shadow-2xs">
-        <div>
-          <h1 className="text-base font-bold text-slate-900 font-sans flex items-center gap-2">
-            <ShieldAlert className="w-5 h-5 text-rose-600" />
-            Threat Signature &amp; Intrusion Monitor
-          </h1>
-          <p className="text-xs text-slate-500 font-mono mt-0.5">
-            Real-Time Attack Interception &bull; Persistent SQLite Threat Audit Ledger
-          </p>
-        </div>
-
-        <button
-          onClick={loadThreats}
-          className="px-3 py-1.5 rounded-xl bg-white border border-slate-200 hover:bg-slate-50 text-slate-700 text-xs font-mono font-semibold transition-all flex items-center gap-1.5 self-start sm:self-auto shadow-2xs"
-        >
-          <RefreshCw className={`w-3.5 h-3.5 text-blue-600 ${isLoading ? 'animate-spin' : ''}`} />
-          <span>Refresh Ledger</span>
-        </button>
-      </div>
-
       {/* Action Feedback */}
       {actionFeedback && (
         <div
@@ -131,41 +110,41 @@ const ThreatMonitor = () => {
 
       {/* Threat Summary Stats Cards */}
       <div className="grid grid-cols-1 sm:grid-cols-3 gap-4">
-        <div className="soc-card rounded-2xl p-5 bg-white border-l-4 border-l-rose-500">
-          <span className="text-xs font-bold uppercase tracking-wider text-slate-500 font-mono">
-            SQL Injection (SQLi)
-          </span>
-          <div className="text-2xl font-extrabold font-mono text-rose-600 mt-2">
-            {sqliCount}
+        <div className="soc-card rounded-2xl p-5 bg-white border border-slate-200">
+          <div className="flex items-center justify-between text-xs font-mono text-slate-500 mb-1">
+            <span>Detected Threats</span>
+            <ShieldAlert className="w-4 h-4 text-rose-600" />
           </div>
-          <p className="text-[11px] text-slate-500 font-mono mt-1">UNION / SELECT / Auth bypass signatures</p>
+          <div className="text-2xl font-extrabold font-mono text-rose-600">
+            {totalDetected}
+          </div>
         </div>
 
-        <div className="soc-card rounded-2xl p-5 bg-white border-l-4 border-l-amber-500">
-          <span className="text-xs font-bold uppercase tracking-wider text-slate-500 font-mono">
-            XSS Injections
-          </span>
-          <div className="text-2xl font-extrabold font-mono text-amber-600 mt-2">
-            {xssCount}
+        <div className="soc-card rounded-2xl p-5 bg-white border border-slate-200">
+          <div className="flex items-center justify-between text-xs font-mono text-slate-500 mb-1">
+            <span>Critical / High Severity</span>
+            <AlertTriangle className="w-4 h-4 text-amber-600" />
           </div>
-          <p className="text-[11px] text-slate-500 font-mono mt-1">Script tags / Event handler payloads</p>
+          <div className="text-2xl font-extrabold font-mono text-amber-600">
+            {criticalCount + highCount}
+          </div>
         </div>
 
-        <div className="soc-card rounded-2xl p-5 bg-white border-l-4 border-l-blue-500">
-          <span className="text-xs font-bold uppercase tracking-wider text-slate-500 font-mono">
-            Recon Probes
-          </span>
-          <div className="text-2xl font-extrabold font-mono text-blue-600 mt-2">
-            {probeCount}
+        <div className="soc-card rounded-2xl p-5 bg-white border border-slate-200">
+          <div className="flex items-center justify-between text-xs font-mono text-slate-500 mb-1">
+            <span>Automatically Mitigated</span>
+            <CheckCircle2 className="w-4 h-4 text-emerald-600" />
           </div>
-          <p className="text-[11px] text-slate-500 font-mono mt-1">Sensitive port sweeps</p>
+          <div className="text-2xl font-extrabold font-mono text-emerald-600">
+            {minorCount}
+          </div>
         </div>
       </div>
 
       {/* Filter and Search Bar */}
       <div className="soc-card rounded-2xl p-3 bg-white flex flex-wrap items-center justify-between gap-3 border border-slate-200">
         <div className="flex items-center gap-1 text-xs font-mono">
-          {['ALL', 'SQLi', 'XSS', 'Probe'].map((tab) => (
+          {['ALL', 'CRITICAL', 'HIGH', 'MEDIUM', 'LOW'].map((tab) => (
             <button
               key={tab}
               onClick={() => setActiveTab(tab)}
@@ -198,9 +177,14 @@ const ThreatMonitor = () => {
           <h3 className="text-xs font-bold uppercase tracking-wider text-slate-900 font-mono">
             Intercepted Threat Events ({filteredThreats.length})
           </h3>
-          <span className="text-xs text-slate-500 font-mono">
-            Source: SQLite Packet Ledger
-          </span>
+          <button
+            onClick={loadThreats}
+            className="px-2.5 py-1 rounded-lg bg-white border border-slate-200 hover:bg-slate-50 text-slate-700 text-xs font-mono font-semibold transition-all flex items-center gap-1.5 shadow-2xs"
+            title="Refresh Threat Ledger"
+          >
+            <RefreshCw className={`w-3.5 h-3.5 text-blue-600 ${isLoading ? 'animate-spin' : ''}`} />
+            <span>Refresh</span>
+          </button>
         </div>
 
         <div className="overflow-x-auto">

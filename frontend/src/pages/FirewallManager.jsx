@@ -96,27 +96,6 @@ const FirewallManager = () => {
 
   return (
     <div className="p-4 sm:p-6 space-y-6 max-w-7xl mx-auto">
-      {/* Header Bar */}
-      <div className="soc-card rounded-2xl p-4 bg-white flex flex-col sm:flex-row sm:items-center justify-between gap-4 border border-slate-200 shadow-2xs">
-        <div>
-          <h1 className="text-base font-bold text-slate-900 font-sans flex items-center gap-2">
-            <Flame className="w-5 h-5 text-rose-600" />
-            Active Host Firewall &amp; Access Control Ledger
-          </h1>
-          <p className="text-xs text-slate-500 font-mono mt-0.5">
-            Kernel Packet Filtering &bull; Platform: {status?.firewall_platform || 'Windows WFP / Linux netsh'}
-          </p>
-        </div>
-
-        <button
-          onClick={fetchRules}
-          className="px-3 py-1.5 rounded-xl bg-white border border-slate-200 hover:bg-slate-50 text-slate-700 text-xs font-mono font-semibold transition-all flex items-center gap-1.5 self-start sm:self-auto shadow-2xs"
-        >
-          <RefreshCw className={`w-3.5 h-3.5 text-blue-600 ${isLoading ? 'animate-spin' : ''}`} />
-          <span>Sync Kernel Rules</span>
-        </button>
-      </div>
-
       {/* Overview Cards */}
       <div className="grid grid-cols-1 md:grid-cols-3 gap-4">
         <div className="soc-card rounded-2xl p-5 bg-white border border-slate-200">
@@ -126,9 +105,6 @@ const FirewallManager = () => {
           </div>
           <div className="text-base font-bold font-mono text-slate-900">
             {status?.firewall_driver || 'Windows Filtering Platform (WFP)'}
-          </div>
-          <div className="text-xs text-slate-500 font-mono mt-1">
-            Platform: {status?.firewall_platform || 'OS Host Kernel'}
           </div>
         </div>
 
@@ -140,9 +116,6 @@ const FirewallManager = () => {
           <div className="text-2xl font-extrabold font-mono text-rose-600">
             {activeRulesCount}
           </div>
-          <div className="text-xs text-slate-500 font-mono mt-1">
-            Active drop entries in OS firewall
-          </div>
         </div>
 
         <div className="soc-card rounded-2xl p-5 bg-white border border-slate-200">
@@ -152,9 +125,6 @@ const FirewallManager = () => {
           </div>
           <div className="text-base font-bold font-mono text-emerald-700 uppercase">
             {role || 'Operator'} Authorized
-          </div>
-          <div className="text-xs text-slate-500 font-mono mt-1">
-            Elevated subprocess command execution
           </div>
         </div>
       </div>
@@ -234,9 +204,19 @@ const FirewallManager = () => {
           <h3 className="text-xs font-bold text-slate-900 uppercase font-mono">
             Active Ingress Drop Ledger
           </h3>
-          <span className="text-xs text-slate-500 font-mono">
-            Total Entries: {rules.length} ({activeRulesCount} Active)
-          </span>
+          <div className="flex items-center gap-3">
+            <span className="text-xs text-slate-500 font-mono">
+              Total Entries: {rules.length} ({activeRulesCount} Active)
+            </span>
+            <button
+              onClick={fetchRules}
+              className="px-2.5 py-1 rounded-lg bg-white border border-slate-200 hover:bg-slate-50 text-slate-700 text-xs font-mono font-semibold transition-all flex items-center gap-1.5 shadow-2xs"
+              title="Sync OS Kernel Rules"
+            >
+              <RefreshCw className={`w-3.5 h-3.5 text-blue-600 ${isLoading ? 'animate-spin' : ''}`} />
+              <span>Sync Rules</span>
+            </button>
+          </div>
         </div>
 
         <div className="overflow-x-auto">

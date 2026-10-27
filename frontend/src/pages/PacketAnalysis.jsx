@@ -41,6 +41,9 @@ const PacketAnalysis = () => {
 
   useEffect(() => {
     loadPackets();
+    const handleGlobalRefresh = () => loadPackets();
+    window.addEventListener('soc:refresh', handleGlobalRefresh);
+    return () => window.removeEventListener('soc:refresh', handleGlobalRefresh);
   }, []);
 
   // Deduplicated combined packets array
@@ -89,30 +92,9 @@ const PacketAnalysis = () => {
 
   return (
     <div className="p-4 sm:p-6 space-y-6 max-w-7xl mx-auto">
-      {/* Header */}
-      <div className="soc-card rounded-2xl p-4 bg-white flex flex-col sm:flex-row sm:items-center justify-between gap-4 border border-slate-200 shadow-2xs">
-        <div>
-          <h1 className="text-base font-bold text-slate-900 font-sans flex items-center gap-2">
-            <Binary className="w-5 h-5 text-blue-600" />
-            Deep Packet Dissection &amp; Byte Analysis
-          </h1>
-          <p className="text-xs text-slate-500 font-mono mt-0.5">
-            L2/L3/L4 Raw Octet Hex Dumps &bull; Decoded Layer-7 ASCII Payloads
-          </p>
-        </div>
-
-        <button
-          onClick={loadPackets}
-          className="px-3 py-1.5 rounded-xl bg-white border border-slate-200 hover:bg-slate-50 text-slate-700 text-xs font-mono font-semibold transition-all flex items-center gap-1.5 shadow-2xs"
-        >
-          <RefreshCw className={`w-3.5 h-3.5 text-blue-600 ${isLoading ? 'animate-spin' : ''}`} />
-          <span>Reload Buffer</span>
-        </button>
-      </div>
-
-      {/* Filter Toolbar */}
+      {/* Filter Toolbar with Integrated Top Controls */}
       <div className="soc-card rounded-2xl p-3 bg-white flex flex-wrap items-center justify-between gap-3 border border-slate-200">
-        <div className="flex items-center gap-1 text-xs font-mono">
+        <div className="flex items-center gap-1 text-xs font-mono overflow-x-auto">
           {['ALL', 'TCP', 'UDP', 'ICMP', 'HTTP', 'HTTPS', 'DNS'].map((proto) => (
             <button
               key={proto}
@@ -128,15 +110,27 @@ const PacketAnalysis = () => {
           ))}
         </div>
 
-        <div className="relative w-full sm:w-64">
-          <Search className="w-3.5 h-3.5 text-slate-400 absolute left-3 top-1/2 -translate-y-1/2" />
-          <input
-            type="text"
-            placeholder="Search Frame IP, Proto..."
-            value={searchQuery}
-            onChange={(e) => setSearchQuery(e.target.value)}
-            className="w-full pl-8 pr-3 py-1.5 bg-slate-50 border border-slate-200 rounded-xl text-xs font-mono text-slate-800 focus:outline-none focus:border-blue-600"
-          />
+        <div className="flex items-center gap-2.5 w-full sm:w-auto">
+          <div className="relative flex-1 sm:w-64">
+            <Search className="w-3.5 h-3.5 text-slate-400 absolute left-3 top-1/2 -translate-y-1/2" />
+            <input
+              type="text"
+              placeholder="Search Frame IP, Proto..."
+              value={searchQuery}
+              onChange={(e) => setSearchQuery(e.target.value)}
+              className="w-full pl-8 pr-3 py-1.5 bg-slate-50 border border-slate-200 rounded-xl text-xs font-mono text-slate-800 focus:outline-none focus:border-blue-600"
+            />
+          </div>
+
+          <button
+            onClick={loadPackets}
+            disabled={isLoading}
+            className="px-3 py-1.5 rounded-xl bg-white border border-slate-200 hover:bg-slate-50 text-slate-700 text-xs font-mono font-semibold transition-all flex items-center gap-1.5 shadow-2xs shrink-0 cursor-pointer disabled:opacity-50"
+            title="Refresh Frame Buffer"
+          >
+            <RefreshCw className={`w-3.5 h-3.5 text-blue-600 ${isLoading ? 'animate-spin' : ''}`} />
+            <span>Refresh</span>
+          </button>
         </div>
       </div>
 
@@ -148,7 +142,14 @@ const PacketAnalysis = () => {
             <span className="text-xs font-bold text-slate-900 uppercase font-mono">
               Frame Buffer ({filtered.length})
             </span>
-            <span className="text-[10px] text-slate-500 font-mono">Select frame to inspect</span>
+            <button
+              onClick={loadPackets}
+              disabled={isLoading}
+              className="p-1 rounded-lg text-slate-500 hover:text-slate-800 hover:bg-slate-200/60 transition-colors"
+              title="Reload Frame Buffer"
+            >
+              <RefreshCw className={`w-3.5 h-3.5 text-blue-600 ${isLoading ? 'animate-spin' : ''}`} />
+            </button>
           </div>
 
           <div className="overflow-y-auto divide-y divide-slate-100 flex-1">
@@ -228,7 +229,7 @@ const PacketAnalysis = () => {
                     )}
                   </div>
                   <p className="text-xs text-slate-500 font-mono mt-0.5">
-                    Frame Size: {activePacket.length || 64} bytes | Promiscuous Ingress Frame
+                    Frame Size: {activePacket.length || 64} bytes
                   </p>
                 </div>
 

@@ -300,15 +300,23 @@ class ResponsePolicyEngine:
             status = "PENDING_APPROVAL"
             reason = f"High risk score ({risk_score}/100) triggered {policy_name}. Temporary restriction recommended."
             is_eligible = True
+        elif threat is not None and (getattr(threat, 'severity', '') in ("Low", "Medium") or risk_score < 65):
+            # Small / low-severity threats: Automatically blocked by background NIPS policy
+            # without requiring manual administrator approval or disturbing continuous operations
+            action_type = "BLOCK"
+            recommended = "AUTO_BLOCK_SMALL_THREAT"
+            status = "EXECUTED"
+            reason = f"Minor threat ({threat.attack_category}) automatically blocked by silent mitigation policy. Admin not disturbed."
+            is_eligible = True
         elif risk_score >= 50:
-            # Elevated risk
+            # Elevated risk (benign anomaly / protocol irregularity)
             action_type = "MONITOR"
             recommended = "INTENSIVE_MONITORING"
             status = "SIMULATED"
             reason = f"Elevated risk score ({risk_score}/100) warrants heightened SOC surveillance."
             is_eligible = False
         else:
-            # Low/Moderate
+            # Low/Moderate benign telemetry
             action_type = "MONITOR"
             recommended = "STANDARD_MONITORING"
             status = "SIMULATED"

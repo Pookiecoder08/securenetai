@@ -23,9 +23,7 @@ const PAGE_NAMES = {
   '/dashboard': 'Dashboard',
   '/topology': 'Network Topology',
   '/threats': 'Threat Monitor',
-  '/ai-analysis': 'AI Behavioral Analysis',
   '/packets': 'Packet Analysis',
-  '/response': 'Automated Response Centre',
   '/firewall': 'Firewall ACLs',
   '/reports': 'SIEM Reports'
 };
@@ -125,27 +123,8 @@ function AppContent() {
           }
         />
 
-        <Route
-          path="/ai-analysis"
-          element={
-            <ProtectedRoute>
-              <AppLayout>
-                <AIAnalysisPage />
-              </AppLayout>
-            </ProtectedRoute>
-          }
-        />
-
-        <Route
-          path="/response"
-          element={
-            <ProtectedRoute allowedRoles={['admin', 'analyst']}>
-              <AppLayout>
-                <AutomatedResponse />
-              </AppLayout>
-            </ProtectedRoute>
-          }
-        />
+        <Route path="/ai-analysis" element={<Navigate to="/dashboard" replace />} />
+        <Route path="/response" element={<Navigate to="/dashboard" replace />} />
 
         <Route
           path="/packets"
