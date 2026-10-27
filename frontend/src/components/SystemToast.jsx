@@ -28,26 +28,26 @@ const SystemToast = ({ toast, onDismiss }) => {
   }
 
   return (
-    <div className="w-full animate-in slide-in-from-bottom-4 duration-200">
-      <div className={`bg-white rounded-2xl shadow-lg p-3.5 border flex items-start gap-3 relative ${borderColor}`}>
-        <div className={`p-2 rounded-xl shrink-0 ${iconBg}`}>
-          <IconComponent className="w-4 h-4" />
+    <div className="w-full animate-in slide-in-from-right-4 duration-200">
+      <div className={`bg-white/95 backdrop-blur-md rounded-xl shadow-md p-2.5 border flex items-start gap-2 relative transition-all ${borderColor}`}>
+        <div className={`p-1 rounded-md shrink-0 mt-0.5 ${iconBg}`}>
+          <IconComponent className="w-3.5 h-3.5" />
         </div>
-        <div className="flex-1 min-w-0 pr-6">
-          <div className="flex items-center gap-2 mb-0.5">
-            <h4 className="text-xs font-bold text-slate-900 font-sans">{toast.title}</h4>
-            <span className="text-[10px] text-slate-400 font-mono">{toast.timestamp || 'Just now'}</span>
+        <div className="flex-1 min-w-0 pr-5">
+          <div className="flex items-center gap-1.5 flex-wrap">
+            <h4 className="text-[11px] font-bold text-slate-900 font-sans">{toast.title}</h4>
+            <span className="text-[9px] text-slate-400 font-mono ml-auto">{toast.timestamp || 'Just now'}</span>
           </div>
           {toast.description && (
-            <p className="text-[11px] text-slate-600 font-sans leading-relaxed">{toast.description}</p>
+            <p className="text-[10px] text-slate-600 font-sans mt-0.5 leading-snug">{toast.description}</p>
           )}
         </div>
         <button
           onClick={onDismiss}
-          className="absolute top-3 right-3 text-slate-400 hover:text-slate-600 transition-colors p-1 rounded-md"
+          className="text-slate-400 hover:text-slate-600 p-0.5 rounded shrink-0 -mt-0.5 -mr-0.5"
           title="Dismiss notification"
         >
-          <X className="w-3.5 h-3.5" />
+          <X className="w-3 h-3" />
         </button>
       </div>
     </div>

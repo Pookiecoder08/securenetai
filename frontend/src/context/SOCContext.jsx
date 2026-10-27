@@ -66,7 +66,23 @@ export const SOCProvider = ({ children }) => {
   // 60-SECOND ROLLING STATISTICS
   // ============================================================
 
-  const [rollingStats, setRollingStats] = useState([]);
+  const generateInitialRollingStats = () => {
+    const now = Date.now();
+    const arr = [];
+    for (let i = 59; i >= 0; i--) {
+      const t = new Date(now - i * 1000);
+      arr.push({
+        time: t.toLocaleTimeString([], { hour: '2-digit', minute: '2-digit', second: '2-digit' }),
+        timestamp: t.toISOString(),
+        pps: 0,
+        inboundMbps: 0.0,
+        outboundMbps: 0.0
+      });
+    }
+    return arr;
+  };
+
+  const [rollingStats, setRollingStats] = useState(generateInitialRollingStats);
 
   // ============================================================
   // PROTOCOL COUNTERS
@@ -90,9 +106,12 @@ export const SOCProvider = ({ children }) => {
   const reconnectTimeoutRef = useRef(null);
   const reconnectAttemptRef = useRef(0);
   const toastCounterRef = useRef(0);
+  const packetBufferRef = useRef([]);
+  const lastHeartbeatTimeRef = useRef(0);
 
   const packetsThisSecondRef = useRef(0);
   const inboundBytesThisSecondRef = useRef(0);
+  const outboundBytesThisSecondRef = useRef(0);
   const lastPacketCounterRef = useRef(0);
   const firewallRulesRef = useRef(firewallRules);
   useEffect(() => {
@@ -111,20 +130,32 @@ export const SOCProvider = ({ children }) => {
 
     setToasts((prev) => [
       newToast,
-      ...prev.slice(0, 4)
+      ...prev.slice(0, 1)
     ]);
 
     setTimeout(() => {
       setToasts((prev) =>
         prev.filter((t) => t.id !== id)
       );
-    }, 7000);
+    }, 5000);
   }, []);
 
   const removeToast = useCallback((id) => {
     setToasts((prev) =>
       prev.filter((t) => t.id !== id)
     );
+  }, []);
+
+  // Batch flush packets to livePackets every 200ms (prevents React UI thread lag)
+  useEffect(() => {
+    const flushInterval = setInterval(() => {
+      if (packetBufferRef.current.length > 0) {
+        const batch = packetBufferRef.current;
+        packetBufferRef.current = [];
+        setLivePackets((prev) => [...batch.reverse(), ...prev].slice(0, 100));
+      }
+    }, 200);
+    return () => clearInterval(flushInterval);
   }, []);
 
   // ============================================================
@@ -141,6 +172,11 @@ export const SOCProvider = ({ children }) => {
 
       setLastUpdatedTimestamp(Date.now());
       setSecondsAgo(0);
+
+      // Hydrate server-calculated 60s continuous rate series
+      if (data?.rolling_stats && Array.isArray(data.rolling_stats) && data.rolling_stats.length > 0) {
+        setRollingStats(data.rolling_stats);
+      }
 
       // Calculate packets per second from packet counter
       const totalPackets =
@@ -191,49 +227,34 @@ export const SOCProvider = ({ children }) => {
     const clockTimer = setInterval(() => {
       setSecondsAgo((prev) => prev + 1);
 
-      const now = new Date();
+      // If server RATE_HEARTBEAT is active, rely strictly on server ground truth
+      if (Date.now() - lastHeartbeatTimeRef.current > 1500) {
+        const now = new Date();
+        const timeLabel = now.toLocaleTimeString([], { hour: '2-digit', minute: '2-digit', second: '2-digit' });
+        const currentPps = packetsThisSecondRef.current;
+        const inboundMbps = Number(
+          ((inboundBytesThisSecondRef.current * 8) / 1_000_000).toFixed(2)
+        );
+        const outboundMbps = Number(
+          ((outboundBytesThisSecondRef.current * 8) / 1_000_000).toFixed(2)
+        );
 
-      const timeLabel =
-        now.toLocaleTimeString();
+        // Reset counters
+        packetsThisSecondRef.current = 0;
+        inboundBytesThisSecondRef.current = 0;
+        outboundBytesThisSecondRef.current = 0;
 
-      const currentPps =
-        packetsThisSecondRef.current;
-
-      const inboundMbps = Number(
-        (
-          (inboundBytesThisSecondRef.current * 8) /
-          1_000_000
-        ).toFixed(2)
-      );
-
-      const outboundMbps = Number(
-        (
-          (outboundBytesThisSecondRef.current * 8) /
-          1_000_000
-        ).toFixed(2)
-      );
-
-      // Reset counters
-      packetsThisSecondRef.current = 0;
-      inboundBytesThisSecondRef.current = 0;
-      outboundBytesThisSecondRef.current = 0;
-
-      setRollingStats((prev) => {
-        const nextPoint = {
-          time: timeLabel,
-          timestamp: now.toISOString(),
-          pps: currentPps,
-          inboundMbps,
-          outboundMbps
-        };
-
-        const updated = [
-          ...prev,
-          nextPoint
-        ];
-
-        return updated.slice(-60);
-      });
+        setRollingStats((prev) => {
+          const nextPoint = {
+            time: timeLabel,
+            timestamp: now.toISOString(),
+            pps: currentPps,
+            inboundMbps,
+            outboundMbps
+          };
+          return [...prev.slice(-59), nextPoint];
+        });
+      }
     }, 1000);
 
     return () => {
@@ -430,10 +451,30 @@ export const SOCProvider = ({ children }) => {
         }
 
         // ------------------------------------------------------
+        // SERVER RATE HEARTBEAT (1-Second Continuous Updates)
+        // ------------------------------------------------------
+        if (msg.type === 'RATE_HEARTBEAT') {
+          lastHeartbeatTimeRef.current = Date.now();
+          setSecondsAgo(0);
+          setRollingStats((prev) => {
+            const nextPoint = {
+              time: msg.time || new Date().toLocaleTimeString([], { hour: '2-digit', minute: '2-digit', second: '2-digit' }),
+              timestamp: msg.timestamp || new Date().toISOString(),
+              pps: msg.pps || 0,
+              inboundMbps: msg.inboundMbps || 0.0,
+              outboundMbps: msg.outboundMbps || 0.0
+            };
+            return [...prev.slice(-59), nextPoint];
+          });
+          return;
+        }
+
+        // ------------------------------------------------------
         // LIVE PACKET
         // ------------------------------------------------------
 
         if (msg.src_ip || msg.protocol) {
+          setSecondsAgo(0);
           packetsThisSecondRef.current += 1;
 
           const pktLength =
@@ -451,14 +492,8 @@ export const SOCProvider = ({ children }) => {
               pktLength;
           }
 
-          // ----------------------------------------------------
-          // LIVE PACKET BUFFER
-          // ----------------------------------------------------
-
-          setLivePackets((prev) => [
-            msg,
-            ...prev.slice(0, 99)
-          ]);
+          // Buffer packet for smooth 200ms batch UI update
+          packetBufferRef.current.push(msg);
 
           // ----------------------------------------------------
           // PROTOCOL COUNTER

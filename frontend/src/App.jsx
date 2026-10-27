@@ -160,10 +160,10 @@ function AppContent() {
         <Route path="*" element={<Navigate to="/dashboard" replace />} />
       </Routes>
 
-      {/* Floating Right Threat Alert Toasts */}
-      <div className="fixed bottom-4 right-4 z-50 flex flex-col gap-3 max-w-md w-full pointer-events-none">
-        <div className="pointer-events-auto space-y-3">
-          {toasts.map((toast) => {
+      {/* Floating Right Threat Alert Toasts (strictly capped at 2 and compact) */}
+      <div className="fixed bottom-4 right-4 z-50 flex flex-col gap-2 max-w-xs sm:max-w-sm w-full pointer-events-none">
+        <div className="pointer-events-auto space-y-2">
+          {toasts.slice(0, 2).map((toast) => {
             const isThreatToast =
               toast.type === 'threat' &&
               (toast.source_ip || toast.packet?.src_ip) &&
@@ -195,7 +195,6 @@ function AppContent() {
                   } else {
                     await blockIp(t.src_ip || t.source_ip, t.threat_type || 'Alert Toast Quick Resolution');
                   }
-                  removeToast(toast.id);
                 }}
               />
             );

@@ -155,45 +155,22 @@ const Navbar = ({ onToggleSidebar, activePageName = 'Dashboard' }) => {
           <span className="font-bold text-blue-700 bg-white px-1.5 py-0.5 rounded border border-slate-200">{adapterIp}</span>
         </div>
 
-        {/* Live Clock / Last Update Counter */}
-        <div className="hidden sm:flex items-center gap-1.5 text-xs font-mono text-slate-500">
-          <Clock className="w-3.5 h-3.5 text-slate-400" />
-          <span>Updated {secondsAgo}s ago</span>
-        </div>
-
-        {/* Connection State Indicator */}
+        {/* Real-Time Update Status (User Requirement: strictly "Updated - seconds ago" without flickering Live/Reconnecting badges) */}
         <div className="flex items-center gap-2">
-          {connectionState === 'Live' && (
-            <span className="inline-flex items-center gap-1.5 px-2.5 py-1 rounded-full bg-emerald-50 text-emerald-700 border border-emerald-200 text-xs font-mono font-semibold">
-              <span className="w-2 h-2 rounded-full bg-emerald-500"></span>
-              Live
-            </span>
-          )}
-
-          {connectionState === 'Reconnecting' && (
-            <span className="inline-flex items-center gap-1.5 px-2.5 py-1 rounded-full bg-amber-50 text-amber-700 border border-amber-200 text-xs font-mono font-semibold">
-              <RefreshCw className="w-3 h-3 animate-spin text-amber-600" />
-              Reconnecting
-            </span>
-          )}
-
-          {connectionState === 'Offline' && (
-            <button
-              onClick={retryConnection}
-              className="inline-flex items-center gap-1.5 px-2.5 py-1 rounded-full bg-rose-50 hover:bg-rose-100 text-rose-700 border border-rose-200 text-xs font-mono font-semibold transition-colors"
-              title="Click to retry backend connection"
-            >
-              <AlertTriangle className="w-3 h-3 text-rose-600" />
-              Offline (Retry)
-            </button>
-          )}
-
-          {connectionState === 'Paused' && (
-            <span className="inline-flex items-center gap-1.5 px-2.5 py-1 rounded-full bg-slate-100 text-slate-600 border border-slate-200 text-xs font-mono font-semibold">
-              <Radio className="w-3 h-3 text-slate-400" />
-              Paused
-            </span>
-          )}
+          <div className="flex items-center gap-1.5 px-3 py-1.5 rounded-full bg-slate-100/90 text-slate-700 border border-slate-200 text-xs font-mono font-medium shadow-2xs">
+            <span className={`w-2 h-2 rounded-full ${isBackendOffline ? 'bg-rose-500 animate-pulse' : 'bg-emerald-500'}`}></span>
+            <Clock className="w-3.5 h-3.5 text-slate-400" />
+            <span>Updated {secondsAgo === 0 ? 'just now' : `${secondsAgo}s ago`}</span>
+            {isBackendOffline && (
+              <button
+                onClick={retryConnection}
+                className="ml-1 text-rose-600 font-bold hover:underline"
+                title="Click to reconnect backend"
+              >
+                (Retry)
+              </button>
+            )}
+          </div>
         </div>
 
         {/* SIEM Notifications Bell Drawer */}

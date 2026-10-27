@@ -23,7 +23,8 @@ import queue
 import json
 import struct
 from datetime import datetime
-from typing import List, Dict, Any, Optional
+from collections import deque
+from typing import List, Dict, Any, Optional, Deque
 
 import psutil
 from fastapi import (
@@ -115,6 +116,18 @@ selected_interface_info: Dict[str, Any] = {
     "status": "Inactive"
 }
 sniffer_running = False
+
+# Real-time traffic rate metrics & continuous 60s time series
+_current_second_packets = 0
+_current_second_inbound_bytes = 0
+_current_second_outbound_bytes = 0
+
+current_pps = 0
+current_inbound_mbps = 0.0
+current_outbound_mbps = 0.0
+rolling_rate_history: Deque[Dict[str, Any]] = deque(maxlen=60)
+_status_cache: Optional[Dict[str, Any]] = None
+_status_cache_time: float = 0.0
 
 # Asyncio Queue for bridging background sniffer thread to async WebSocket broadcaster
 packet_async_queue: Optional[asyncio.Queue] = None
@@ -336,6 +349,7 @@ def process_packet_bytes(raw_data: bytes):
     5. Dispatches to async queue for WebSocket broadcast.
     """
     global packet_counter, threat_counter, critical_threat_counter
+    global _current_second_packets, _current_second_inbound_bytes, _current_second_outbound_bytes
 
     try:
         pkt = IP(raw_data)
@@ -416,6 +430,13 @@ def process_packet_bytes(raw_data: bytes):
     direction = "inbound" if (dst_ip == host_ip or not host_ip) else "outbound"
 
     packet_counter += 1
+    _current_second_packets += 1
+    pkt_len = len(raw_data)
+    if direction == "inbound":
+        _current_second_inbound_bytes += pkt_len
+    else:
+        _current_second_outbound_bytes += pkt_len
+
     risk_score_val = 0
     risk_band_val = "Low"
     ai_anomaly_val = 0
@@ -564,18 +585,77 @@ def process_packet_bytes(raw_data: bytes):
 # WebSocket Broadcaster Worker
 # -----------------------------------------------------------------------------
 async def websocket_broadcaster_worker():
-    """Async background worker reading from packet_async_queue and broadcasting to clients."""
+    """
+    Async background worker reading from packet_async_queue and broadcasting to clients.
+    Throttles non-threat packet broadcasting to max 10/sec (every 100ms) to prevent Ngrok tunnel buffer bloat.
+    Threat packets are always broadcast immediately with zero latency.
+    """
     global packet_async_queue
     print("[Broadcaster Worker] WebSocket async broadcast loop initialized.")
+    last_normal_broadcast = 0.0
     while True:
         try:
             packet = await packet_async_queue.get()
-            await manager.broadcast_packet(packet)
+            is_threat = packet.get("is_threat", False)
+            now = time.time()
+            if is_threat or (now - last_normal_broadcast >= 0.10):
+                if not is_threat:
+                    last_normal_broadcast = now
+                await manager.broadcast_packet(packet)
             packet_async_queue.task_done()
         except asyncio.CancelledError:
             break
         except Exception:
             await asyncio.sleep(0.01)
+
+
+async def rate_calculator_worker():
+    """
+    1-second rolling rate engine:
+    Computes exact Packets-Per-Second (PPS) and Inbound/Outbound Throughput (Mbps),
+    maintains a persistent 60-second sliding history, and broadcasts real-time heartbeats to WebSockets.
+    """
+    global _current_second_packets, _current_second_inbound_bytes, _current_second_outbound_bytes
+    global current_pps, current_inbound_mbps, current_outbound_mbps, rolling_rate_history
+    print("[Rate Engine] 1-second rolling rate calculator initialized.")
+    while True:
+        try:
+            await asyncio.sleep(1.0)
+            pps = _current_second_packets
+            in_bytes = _current_second_inbound_bytes
+            out_bytes = _current_second_outbound_bytes
+            _current_second_packets = 0
+            _current_second_inbound_bytes = 0
+            _current_second_outbound_bytes = 0
+
+            current_pps = pps
+            current_inbound_mbps = round((in_bytes * 8) / 1_000_000, 3)
+            current_outbound_mbps = round((out_bytes * 8) / 1_000_000, 3)
+
+            time_str = datetime.now().strftime("%H:%M:%S")
+            point = {
+                "time": time_str,
+                "timestamp": datetime.utcnow().isoformat(),
+                "pps": pps,
+                "inboundMbps": current_inbound_mbps,
+                "outboundMbps": current_outbound_mbps
+            }
+            rolling_rate_history.append(point)
+
+            # Broadcast heartbeat to keep WebSocket and dashboard charts live
+            if manager.active_connections:
+                await manager.broadcast_packet({
+                    "type": "RATE_HEARTBEAT",
+                    "pps": pps,
+                    "inboundMbps": current_inbound_mbps,
+                    "outboundMbps": current_outbound_mbps,
+                    "timestamp": point["timestamp"],
+                    "time": time_str
+                })
+        except asyncio.CancelledError:
+            break
+        except Exception:
+            await asyncio.sleep(1.0)
 
 
 # -----------------------------------------------------------------------------
@@ -827,8 +907,9 @@ async def startup_event():
     # 2. Select interface
     iface = select_and_bind_interface()
 
-    # 3. Start async broadcaster worker
+    # 3. Start async broadcaster worker and rate calculation engine
     asyncio.create_task(websocket_broadcaster_worker())
+    asyncio.create_task(rate_calculator_worker())
 
     # 4. Start DB persistence worker daemon
     db_thread = threading.Thread(target=db_saver_worker, daemon=True)
@@ -1323,7 +1404,22 @@ async def get_system_status(
     current_user: User = Depends(get_current_user),
     db: Session = Depends(get_db)
 ):
-    """Returns runtime telemetry on active adapter, sniffer state, and firewall platform."""
+    """Returns runtime telemetry on active adapter, sniffer state, firewall platform, and 60s rate series."""
+    global _status_cache, _status_cache_time
+    now = time.time()
+    if _status_cache and (now - _status_cache_time < 3.0):
+        res = dict(_status_cache)
+        res.update({
+            "total_packets_captured": packet_counter,
+            "total_threats_detected": threat_counter,
+            "critical_threats_detected": critical_threat_counter,
+            "current_pps": current_pps,
+            "current_inbound_mbps": current_inbound_mbps,
+            "current_outbound_mbps": current_outbound_mbps,
+            "rolling_stats": list(rolling_rate_history)
+        })
+        return res
+
     fw_info = firewall.get_platform_info()
     active_rule_count = db.query(FirewallRule).filter(FirewallRule.is_active == True).count()
     total_sec_events = db.query(SecurityEvent).count()
@@ -1337,7 +1433,7 @@ async def get_system_status(
     recent_devices = db.query(PacketLog.src_ip).distinct().limit(50).all()
     devices_count = len(recent_devices)
 
-    return {
+    data = {
         "adapter": selected_interface_info,
         "sniffer_running": sniffer_running,
         "total_packets_captured": packet_counter,
@@ -1355,8 +1451,15 @@ async def get_system_status(
         "recent_devices_count": devices_count,
         "capture_filter_mode": capture_filter_mode,
         "firewall_platform": fw_info["os"],
-        "firewall_driver": fw_info["driver"]
+        "firewall_driver": fw_info["driver"],
+        "current_pps": current_pps,
+        "current_inbound_mbps": current_inbound_mbps,
+        "current_outbound_mbps": current_outbound_mbps,
+        "rolling_stats": list(rolling_rate_history)
     }
+    _status_cache = data
+    _status_cache_time = now
+    return data
 
 
 

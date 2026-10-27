@@ -89,8 +89,8 @@ const Dashboard = ({ onInvestigatePacket }) => {
   const snifferRunning = status?.sniffer_running ?? false;
   const currentFilterMode = status?.capture_filter_mode || 'soc_filtered';
 
-  // Current PPS (latest from 60-second rolling time-series)
-  const currentPps = rollingStats.length > 0 ? rollingStats[rollingStats.length - 1].pps : 0;
+  // Current PPS (latest from 60-second rolling time-series or server status)
+  const currentPps = (rollingStats.length > 0 ? rollingStats[rollingStats.length - 1].pps : 0) || status?.current_pps || 0;
 
 
   // Filtered Live Packets for Table
@@ -136,8 +136,6 @@ const Dashboard = ({ onInvestigatePacket }) => {
       setIsResetting(false);
     }
   };
-
-  const hasTrafficData = rollingStats.some((p) => p.pps > 0 || p.inboundMbps > 0 || p.outboundMbps > 0);
 
   return (
     <div className="p-4 sm:p-6 space-y-6 max-w-7xl mx-auto">
@@ -249,12 +247,6 @@ const Dashboard = ({ onInvestigatePacket }) => {
           </div>
 
           <div className="h-64 w-full relative">
-            {!hasTrafficData && (
-              <div className="absolute inset-0 flex flex-col items-center justify-center bg-slate-50/80 rounded-xl border border-dashed border-slate-200 z-10 p-4">
-                <Radio className="w-6 h-6 text-slate-400 mb-2" />
-                <span className="text-xs font-bold text-slate-700 font-mono">Awaiting Network Traffic</span>
-              </div>
-            )}
             <ResponsiveContainer width="100%" height="100%">
               <AreaChart data={rollingStats}>
                 <defs>
@@ -265,7 +257,12 @@ const Dashboard = ({ onInvestigatePacket }) => {
                 </defs>
                 <CartesianGrid strokeDasharray="3 3" stroke="#f1f5f9" />
                 <XAxis dataKey="time" stroke="#94a3b8" tick={{ fontSize: 10, fill: '#64748b' }} />
-                <YAxis stroke="#94a3b8" tick={{ fontSize: 10, fill: '#64748b' }} allowDecimals={false} />
+                <YAxis
+                  stroke="#94a3b8"
+                  tick={{ fontSize: 10, fill: '#64748b' }}
+                  allowDecimals={false}
+                  domain={[0, (dataMax) => Math.max(10, Math.ceil(dataMax * 1.2))]}
+                />
                 <Tooltip
                   contentStyle={{ backgroundColor: '#0f172a', borderColor: '#334155', borderRadius: '8px', color: '#f8fafc', fontSize: '11px' }}
                 />
@@ -339,7 +336,11 @@ const Dashboard = ({ onInvestigatePacket }) => {
               <LineChart data={rollingStats}>
                 <CartesianGrid strokeDasharray="3 3" stroke="#f1f5f9" />
                 <XAxis dataKey="time" stroke="#94a3b8" tick={{ fontSize: 10, fill: '#64748b' }} />
-                <YAxis stroke="#94a3b8" tick={{ fontSize: 10, fill: '#64748b' }} />
+                <YAxis
+                  stroke="#94a3b8"
+                  tick={{ fontSize: 10, fill: '#64748b' }}
+                  domain={[0, (dataMax) => Math.max(1, Number((dataMax * 1.2).toFixed(2)))]}
+                />
                 <Tooltip
                   contentStyle={{ backgroundColor: '#0f172a', borderColor: '#334155', borderRadius: '8px', color: '#f8fafc', fontSize: '11px' }}
                 />

@@ -127,6 +127,14 @@ def decode_supabase_jwt(token: str) -> dict:
         raise credentials_exception
 
 
+import time
+import hashlib
+from typing import Dict, Tuple
+
+# In-memory authenticated operator cache (token_hash -> (User, expires_at)) to eliminate DB latency on repeated calls
+_operator_cache: Dict[str, Tuple[User, float]] = {}
+
+
 def get_current_user(
     token: Optional[str] = Depends(oauth2_scheme),
     db: Session = Depends(get_db)
@@ -134,6 +142,7 @@ def get_current_user(
     """
     FastAPI security dependency to validate incoming Supabase JWT Bearer token
     and resolve or synchronize the authenticated operator User record.
+    Caches verified operator records for 60 seconds to eliminate database round-trip latency.
     """
     credentials_exception = HTTPException(
         status_code=status.HTTP_401_UNAUTHORIZED,
@@ -143,6 +152,12 @@ def get_current_user(
 
     if not token:
         raise credentials_exception
+
+    token_hash = hashlib.sha256(token.encode("utf-8")).hexdigest()
+    now = time.time()
+    cached = _operator_cache.get(token_hash)
+    if cached and cached[1] > now:
+        return cached[0]
 
     payload = decode_supabase_jwt(token)
     user_id: Optional[str] = payload.get("sub")
@@ -213,6 +228,9 @@ def get_current_user(
             except SQLAlchemyError as err:
                 db.rollback()
                 print(f"[Supabase Auth DB Notice] Could not update user role: {err}")
+
+    if user:
+        _operator_cache[token_hash] = (user, now + 60.0)
 
     return user
 

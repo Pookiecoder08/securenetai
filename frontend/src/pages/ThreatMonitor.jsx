@@ -118,23 +118,20 @@ const ThreatMonitor = () => {
   const handleResolveThreat = async (threat) => {
     if (isEmployee || !threat.src_ip) return;
     const threatKey = threat.id || `${threat.src_ip}-${threat.timestamp}`;
-    setResolvingId(threatKey);
-    setActionFeedback(null);
+    // 1. Instant optimistic feedback notification (0ms delay)
+    setActionFeedback({
+      success: true,
+      message: `Drop rule enforced against ${threat.src_ip}. Threat mitigated.`
+    });
 
-    // 1. Instant optimistic local removal from UI
+    // 2. Instant optimistic local removal from UI
     setDbThreats((prev) =>
       prev.filter((t) => (t.id || `${t.src_ip}-${t.timestamp}`) !== threatKey && t.src_ip !== threat.src_ip)
     );
 
     try {
-      // 2. Enforce active kernel drop via resolveThreat
+      // 3. Enforce active kernel drop via resolveThreat
       await resolveThreat(threat);
-      setActionFeedback({
-        success: true,
-        message: `Drop rule enforced against ${threat.src_ip}. Threat mitigated.`
-      });
-
-      // 3. Background sync without freezing table
       loadThreats(false);
     } catch (err) {
       setActionFeedback({
