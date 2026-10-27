@@ -123,28 +123,6 @@ const Sidebar = ({ isOpen, onClose }) => {
               })}
           </nav>
         </div>
-
-        {/* System Health Summary Footer */}
-        <div className="p-4 border-t border-slate-100 bg-slate-50/60">
-          <div className="p-3 rounded-xl bg-white border border-slate-200 shadow-2xs space-y-1.5">
-            <div className="flex items-center justify-between text-xs font-mono">
-              <span className="font-bold text-slate-700 flex items-center gap-1.5">
-                <Activity className="w-3.5 h-3.5 text-blue-600" /> Sensor Status
-              </span>
-              <span
-                className={`w-2 h-2 rounded-full ${
-                  status?.sniffer_running ? 'bg-emerald-500' : 'bg-rose-500'
-                }`}
-              ></span>
-            </div>
-            <div className="text-[11px] text-slate-500 font-mono">
-              Mode:{' '}
-              <span className="font-semibold text-slate-800">
-                {status?.capture_filter_mode || 'soc_filtered'}
-              </span>
-            </div>
-          </div>
-        </div>
       </aside>
     </>
   );

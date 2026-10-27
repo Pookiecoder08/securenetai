@@ -587,8 +587,8 @@ def process_packet_bytes(raw_data: bytes):
 async def websocket_broadcaster_worker():
     """
     Async background worker reading from packet_async_queue and broadcasting to clients.
-    Throttles non-threat packet broadcasting to max 10/sec (every 100ms) to prevent Ngrok tunnel buffer bloat.
-    Threat packets are always broadcast immediately with zero latency.
+    Samples non-threat packet broadcasting to 1 packet per 1.5s to keep dashboard UI lightning fast and eliminate Ngrok tunnel buffer bloat.
+    Threat packets and malicious anomalies are ALWAYS broadcast immediately with 0ms latency.
     """
     global packet_async_queue
     print("[Broadcaster Worker] WebSocket async broadcast loop initialized.")
@@ -598,7 +598,7 @@ async def websocket_broadcaster_worker():
             packet = await packet_async_queue.get()
             is_threat = packet.get("is_threat", False)
             now = time.time()
-            if is_threat or (now - last_normal_broadcast >= 0.10):
+            if is_threat or (now - last_normal_broadcast >= 1.5):
                 if not is_threat:
                     last_normal_broadcast = now
                 await manager.broadcast_packet(packet)
@@ -642,13 +642,16 @@ async def rate_calculator_worker():
             }
             rolling_rate_history.append(point)
 
-            # Broadcast heartbeat to keep WebSocket and dashboard charts live
+            # Broadcast heartbeat to keep WebSocket and dashboard charts live with immediate total counters
             if manager.active_connections:
                 await manager.broadcast_packet({
                     "type": "RATE_HEARTBEAT",
                     "pps": pps,
                     "inboundMbps": current_inbound_mbps,
                     "outboundMbps": current_outbound_mbps,
+                    "total_packets": packet_counter,
+                    "total_threats": threat_counter,
+                    "critical_threats": critical_threat_counter,
                     "timestamp": point["timestamp"],
                     "time": time_str
                 })

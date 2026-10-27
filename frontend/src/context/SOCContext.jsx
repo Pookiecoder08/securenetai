@@ -107,6 +107,7 @@ export const SOCProvider = ({ children }) => {
   const reconnectAttemptRef = useRef(0);
   const toastCounterRef = useRef(0);
   const packetBufferRef = useRef([]);
+  const protocolDeltaRef = useRef({});
   const lastHeartbeatTimeRef = useRef(0);
 
   const packetsThisSecondRef = useRef(0);
@@ -146,13 +147,26 @@ export const SOCProvider = ({ children }) => {
     );
   }, []);
 
-  // Batch flush packets to livePackets every 200ms (prevents React UI thread lag)
+  // Batch flush packets and protocol counters every 200ms (eliminates React UI thread lag)
   useEffect(() => {
     const flushInterval = setInterval(() => {
       if (packetBufferRef.current.length > 0) {
         const batch = packetBufferRef.current;
         packetBufferRef.current = [];
-        setLivePackets((prev) => [...batch.reverse(), ...prev].slice(0, 100));
+        setLivePackets((prev) => [...batch.reverse(), ...prev].slice(0, 20));
+      }
+
+      const deltas = protocolDeltaRef.current;
+      const protoKeys = Object.keys(deltas);
+      if (protoKeys.length > 0) {
+        protocolDeltaRef.current = {};
+        setProtocolCounts((prev) => {
+          const next = { ...prev };
+          for (const k of protoKeys) {
+            next[k] = (next[k] || 0) + deltas[k];
+          }
+          return next;
+        });
       }
     }, 200);
     return () => clearInterval(flushInterval);
@@ -228,7 +242,7 @@ export const SOCProvider = ({ children }) => {
       setSecondsAgo((prev) => prev + 1);
 
       // If server RATE_HEARTBEAT is active, rely strictly on server ground truth
-      if (Date.now() - lastHeartbeatTimeRef.current > 1500) {
+      if (Date.now() - lastHeartbeatTimeRef.current > 5000) {
         const now = new Date();
         const timeLabel = now.toLocaleTimeString([], { hour: '2-digit', minute: '2-digit', second: '2-digit' });
         const currentPps = packetsThisSecondRef.current;
@@ -420,11 +434,6 @@ export const SOCProvider = ({ children }) => {
       try {
         const msg = JSON.parse(event.data);
 
-        console.log(
-          '[SecureNet AI] WebSocket message:',
-          msg
-        );
-
         // ------------------------------------------------------
         // SESSION RESET
         // ------------------------------------------------------
@@ -456,6 +465,22 @@ export const SOCProvider = ({ children }) => {
         if (msg.type === 'RATE_HEARTBEAT') {
           lastHeartbeatTimeRef.current = Date.now();
           setSecondsAgo(0);
+
+          // Instant telemetry synchronization on millisecond 0 (no HTTP delay)
+          if (msg.total_packets !== undefined) {
+            setStatus((prev) => ({
+              ...prev,
+              total_packets_captured: msg.total_packets,
+              packet_counter: msg.total_packets,
+              total_threats_detected: msg.total_threats ?? prev?.total_threats_detected ?? 0,
+              threat_counter: msg.total_threats ?? prev?.threat_counter ?? 0,
+              critical_threats_detected: msg.critical_threats ?? prev?.critical_threats_detected ?? 0,
+              current_pps: msg.pps ?? prev?.current_pps ?? 0,
+              current_inbound_mbps: msg.inboundMbps ?? prev?.current_inbound_mbps ?? 0,
+              current_outbound_mbps: msg.outboundMbps ?? prev?.current_outbound_mbps ?? 0
+            }));
+          }
+
           setRollingStats((prev) => {
             const nextPoint = {
               time: msg.time || new Date().toLocaleTimeString([], { hour: '2-digit', minute: '2-digit', second: '2-digit' }),
@@ -496,17 +521,13 @@ export const SOCProvider = ({ children }) => {
           packetBufferRef.current.push(msg);
 
           // ----------------------------------------------------
-          // PROTOCOL COUNTER
+          // PROTOCOL COUNTER (BATTERED FOR 0ms UI THREAD LAG)
           // ----------------------------------------------------
 
           const proto =
             (msg.protocol || 'OTHER').toUpperCase();
 
-          setProtocolCounts((prev) => ({
-            ...prev,
-            [proto]:
-              (prev[proto] || 0) + 1
-          }));
+          protocolDeltaRef.current[proto] = (protocolDeltaRef.current[proto] || 0) + 1;
 
           // ----------------------------------------------------
           // THREAT DETECTION

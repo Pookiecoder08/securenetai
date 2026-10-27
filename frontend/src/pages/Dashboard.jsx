@@ -72,6 +72,22 @@ const Dashboard = ({ onInvestigatePacket }) => {
 
   const [activeProtoFilter, setActiveProtoFilter] = useState('ALL');
   const [isResetting, setIsResetting] = useState(false);
+  const [chartKey, setChartKey] = useState(0);
+
+  // Ensure Recharts layout stays active and never disappears when switching tabs or windows
+  React.useEffect(() => {
+    const handleVis = () => {
+      if (!document.hidden) {
+        setChartKey((k) => k + 1);
+      }
+    };
+    window.addEventListener('visibilitychange', handleVis);
+    window.addEventListener('focus', handleVis);
+    return () => {
+      window.removeEventListener('visibilitychange', handleVis);
+      window.removeEventListener('focus', handleVis);
+    };
+  }, []);
 
   // 1. Core Live Metric Calculations (Strictly from real backend status & persisted telemetry)
   const totalPackets = status?.total_packets_captured ?? status?.packet_counter ?? 0;
@@ -81,7 +97,6 @@ const Dashboard = ({ onInvestigatePacket }) => {
   const activeRulesCount = status?.active_firewall_rules_count ?? firewallRules.length ?? 0;
   const pendingDecisionsCount = status?.pending_response_decisions_count ?? 0;
   const activeRestrictionsCount = status?.active_restrictions_count ?? activeRulesCount;
-  const observedDevicesCount = status?.recent_devices_count ?? 0;
   const isSimulationMode = status?.simulation_mode ?? true;
   const aiModelLoaded = status?.ai_model_loaded ?? false;
   const adapterName = status?.adapter?.name || 'NIC Interface';
@@ -92,8 +107,19 @@ const Dashboard = ({ onInvestigatePacket }) => {
   // Current PPS (latest from 60-second rolling time-series or server status)
   const currentPps = (rollingStats.length > 0 ? rollingStats[rollingStats.length - 1].pps : 0) || status?.current_pps || 0;
 
+  // Real-time line graph starts when packets are inspected and continuous across tab switches
+  const chartStats = useMemo(() => {
+    if (!rollingStats || rollingStats.length === 0) return [];
+    const firstTrafficIdx = rollingStats.findIndex((p) => p.pps > 0 || p.inboundMbps > 0 || p.outboundMbps > 0);
+    if (firstTrafficIdx > 0) {
+      const startIdx = Math.max(0, firstTrafficIdx - 3);
+      const sliced = rollingStats.slice(startIdx);
+      return sliced.length >= 2 ? sliced : rollingStats.slice(-2);
+    }
+    return rollingStats;
+  }, [rollingStats]);
 
-  // Filtered Live Packets for Table
+  // Filtered Live Packets for Table (strictly capped at 10 to keep UI lightning fast)
   const displayedPackets = useMemo(() => {
     return livePackets.filter((pkt) => {
       if (activeProtoFilter !== 'ALL') {
@@ -101,7 +127,7 @@ const Dashboard = ({ onInvestigatePacket }) => {
         if (p !== activeProtoFilter) return false;
       }
       return true;
-    }).slice(0, 50);
+    }).slice(0, 10);
   }, [livePackets, activeProtoFilter]);
 
   // Protocol Chart Data derived strictly from real protocolCounts
@@ -140,7 +166,7 @@ const Dashboard = ({ onInvestigatePacket }) => {
   return (
     <div className="p-4 sm:p-6 space-y-6 max-w-7xl mx-auto">
       {/* Comprehensive Operational Metric Cards */}
-      <div className="grid grid-cols-2 lg:grid-cols-6 gap-3 sm:gap-4">
+      <div className="grid grid-cols-2 lg:grid-cols-5 gap-3 sm:gap-4">
         {/* Total Events */}
         <div className="soc-card soc-card-hover rounded-2xl p-4 bg-white border border-slate-200 shadow-2xs">
           <div className="flex items-center justify-between mb-1">
@@ -153,21 +179,6 @@ const Dashboard = ({ onInvestigatePacket }) => {
           </div>
           <div className="text-xl font-extrabold text-slate-900 font-mono truncate">
             {totalEvents.toLocaleString()}
-          </div>
-        </div>
-
-        {/* Observed Devices */}
-        <div className="soc-card soc-card-hover rounded-2xl p-4 bg-white border border-slate-200 shadow-2xs">
-          <div className="flex items-center justify-between mb-1">
-            <span className="text-[10px] font-bold uppercase tracking-wider text-slate-500 font-mono">
-              Observed Devices
-            </span>
-            <div className="p-1.5 rounded-lg bg-indigo-50 text-indigo-600 border border-indigo-200">
-              <Server className="w-3.5 h-3.5" />
-            </div>
-          </div>
-          <div className="text-xl font-extrabold text-slate-900 font-mono">
-            {observedDevicesCount}
           </div>
         </div>
 
@@ -247,8 +258,8 @@ const Dashboard = ({ onInvestigatePacket }) => {
           </div>
 
           <div className="h-64 w-full relative">
-            <ResponsiveContainer width="100%" height="100%">
-              <AreaChart data={rollingStats}>
+            <ResponsiveContainer key={`pps-chart-${chartKey}`} width="100%" height={240} minWidth={100} minHeight={240}>
+              <AreaChart data={chartStats}>
                 <defs>
                   <linearGradient id="ppsGradient" x1="0" y1="0" x2="0" y2="1">
                     <stop offset="5%" stopColor="#2563eb" stopOpacity={0.25} />
@@ -266,7 +277,7 @@ const Dashboard = ({ onInvestigatePacket }) => {
                 <Tooltip
                   contentStyle={{ backgroundColor: '#0f172a', borderColor: '#334155', borderRadius: '8px', color: '#f8fafc', fontSize: '11px' }}
                 />
-                <Area type="monotone" dataKey="pps" stroke="#2563eb" strokeWidth={2} fillOpacity={1} fill="url(#ppsGradient)" name="PPS" />
+                <Area type="monotone" dataKey="pps" stroke="#2563eb" strokeWidth={2} fillOpacity={1} fill="url(#ppsGradient)" name="PPS" isAnimationActive={false} />
               </AreaChart>
             </ResponsiveContainer>
           </div>
@@ -287,7 +298,7 @@ const Dashboard = ({ onInvestigatePacket }) => {
               </div>
             ) : (
               <>
-                <ResponsiveContainer width="100%" height="100%">
+                <ResponsiveContainer key={`proto-chart-${chartKey}`} width="100%" height={220} minWidth={100} minHeight={220}>
                   <PieChart>
                     <Pie
                       data={protocolData}
@@ -297,6 +308,7 @@ const Dashboard = ({ onInvestigatePacket }) => {
                       outerRadius={80}
                       paddingAngle={4}
                       dataKey="value"
+                      isAnimationActive={false}
                     >
                       {protocolData.map((entry, index) => (
                         <Cell key={`cell-${index}`} fill={entry.color} />
@@ -332,8 +344,8 @@ const Dashboard = ({ onInvestigatePacket }) => {
             </h3>
           </div>
           <div className="h-60 w-full">
-            <ResponsiveContainer width="100%" height="100%">
-              <LineChart data={rollingStats}>
+            <ResponsiveContainer key={`thru-chart-${chartKey}`} width="100%" height={230} minWidth={100} minHeight={230}>
+              <LineChart data={chartStats}>
                 <CartesianGrid strokeDasharray="3 3" stroke="#f1f5f9" />
                 <XAxis dataKey="time" stroke="#94a3b8" tick={{ fontSize: 10, fill: '#64748b' }} />
                 <YAxis
@@ -344,8 +356,8 @@ const Dashboard = ({ onInvestigatePacket }) => {
                 <Tooltip
                   contentStyle={{ backgroundColor: '#0f172a', borderColor: '#334155', borderRadius: '8px', color: '#f8fafc', fontSize: '11px' }}
                 />
-                <Line type="monotone" dataKey="inboundMbps" stroke="#059669" strokeWidth={2} dot={false} name="Inbound (Mbps)" />
-                <Line type="monotone" dataKey="outboundMbps" stroke="#4f46e5" strokeWidth={2} dot={false} name="Outbound (Mbps)" />
+                <Line type="monotone" dataKey="inboundMbps" stroke="#059669" strokeWidth={2} dot={false} name="Inbound (Mbps)" isAnimationActive={false} />
+                <Line type="monotone" dataKey="outboundMbps" stroke="#4f46e5" strokeWidth={2} dot={false} name="Outbound (Mbps)" isAnimationActive={false} />
               </LineChart>
             </ResponsiveContainer>
           </div>
