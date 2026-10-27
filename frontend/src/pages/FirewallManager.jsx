@@ -18,10 +18,10 @@ import {
 
 const FirewallManager = () => {
   const { role, isEmployee } = useAuth();
-  const { status, blockIp, unblockIp, refreshPersistedData } = useSOC();
+  const { status, blockIp, unblockIp, refreshPersistedData, firewallRules } = useSOC();
 
-  const [rules, setRules] = useState([]);
-  const [isLoading, setIsLoading] = useState(true);
+  const [rules, setRules] = useState(firewallRules || []);
+  const [isLoading, setIsLoading] = useState(!firewallRules || firewallRules.length === 0);
   const [ipAddress, setIpAddress] = useState('');
   const [reason, setReason] = useState('Manual Administrative Isolation');
   const [isSubmitting, setIsSubmitting] = useState(false);
@@ -29,21 +29,31 @@ const FirewallManager = () => {
   const [confirmIpToUnblock, setConfirmIpToUnblock] = useState(null);
 
   // Fetch firewall rules from GET /api/firewall/rules
-  const fetchRules = async () => {
-    setIsLoading(true);
+  const fetchRules = async (showSpinner = false) => {
+    if (showSpinner) setIsLoading(true);
     try {
       const data = await apiClient.getFirewallRules();
-      setRules(data || []);
+      if (Array.isArray(data)) {
+        setRules(data);
+      }
     } catch (err) {
-      setFeedback({ success: false, message: 'Failed to fetch active firewall rules.' });
+      if (showSpinner) {
+        setFeedback({ success: false, message: 'Failed to fetch active firewall rules.' });
+      }
     } finally {
       setIsLoading(false);
     }
   };
 
   useEffect(() => {
-    fetchRules();
-  }, []);
+    if (firewallRules && firewallRules.length > 0) {
+      setRules(firewallRules);
+      setIsLoading(false);
+      fetchRules(false);
+    } else {
+      fetchRules(true);
+    }
+  }, [firewallRules]);
 
   // Submit Manual Block
   const handleEnforceBlock = async (e) => {

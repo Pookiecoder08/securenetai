@@ -128,10 +128,22 @@ const Topology = () => {
   const { isAdmin } = useAuth();
   const { livePackets } = useSOC();
 
-  const [nodes, setNodes] = useState([]);
-  const [edges, setEdges] = useState([]);
-  const [updatedAt, setUpdatedAt] = useState(null);
-  const [isLoading, setIsLoading] = useState(true);
+  const getInitialTopology = () => {
+    try {
+      const cached = localStorage.getItem('securenet_topology_cache');
+      if (cached) {
+        const parsed = JSON.parse(cached);
+        if (parsed?.nodes && parsed?.edges) return parsed;
+      }
+    } catch (_) {}
+    return { nodes: [], edges: [], updated_at: null };
+  };
+
+  const initialTop = useMemo(() => getInitialTopology(), []);
+  const [nodes, setNodes] = useState(initialTop.nodes);
+  const [edges, setEdges] = useState(initialTop.edges);
+  const [updatedAt, setUpdatedAt] = useState(initialTop.updated_at);
+  const [isLoading, setIsLoading] = useState(initialTop.nodes.length === 0);
   const [isSaving, setIsSaving] = useState(false);
   const [feedback, setFeedback] = useState(null);
 
@@ -147,24 +159,29 @@ const Topology = () => {
   const [formError, setFormError] = useState('');
 
   // Load Topology strictly from GET /api/topology
-  const loadTopologyFromBackend = useCallback(async () => {
-    setIsLoading(true);
+  const loadTopologyFromBackend = useCallback(async (showSpinner = false) => {
+    if (showSpinner) setIsLoading(true);
     try {
       const data = await apiClient.getTopology();
       if (data && data.nodes && data.edges) {
         setNodes(data.nodes);
         setEdges(data.edges);
         setUpdatedAt(data.updated_at || null);
+        try {
+          localStorage.setItem('securenet_topology_cache', JSON.stringify(data));
+        } catch (_) {}
       }
     } catch (err) {
-      setFeedback({ success: false, message: 'Failed to load topology from backend.' });
+      if (showSpinner) {
+        setFeedback({ success: false, message: 'Failed to load topology from backend.' });
+      }
     } finally {
       setIsLoading(false);
     }
   }, []);
 
   useEffect(() => {
-    loadTopologyFromBackend();
+    loadTopologyFromBackend(nodes.length === 0);
   }, [loadTopologyFromBackend]);
 
   // Handle Node Changes (Drag / Position)
@@ -212,7 +229,11 @@ const Topology = () => {
     setFeedback(null);
     try {
       const result = await apiClient.saveTopology(nodes, edges);
-      setUpdatedAt(new Date().toISOString());
+      const isoNow = new Date().toISOString();
+      setUpdatedAt(isoNow);
+      try {
+        localStorage.setItem('securenet_topology_cache', JSON.stringify({ nodes, edges, updated_at: isoNow }));
+      } catch (_) {}
       setFeedback({ success: true, message: result.message || 'Topology architecture saved.' });
     } catch (err) {
       setFeedback({ success: false, message: err.message || 'Failed to save topology.' });

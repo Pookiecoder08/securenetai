@@ -103,12 +103,22 @@ def execute_os_unblock(ip: str) -> Dict[str, Any]:
         return {"success": False, "error": f"OS execution error: {e}", "cmd": " ".join(cmd)}
 
 
+_firewall_cache: Optional[List[Dict[str, Any]]] = None
+_firewall_cache_time: float = 0.0
+
+
+def invalidate_firewall_cache():
+    global _firewall_cache
+    _firewall_cache = None
+
+
 def block_ip(
     ip: str,
     reason: str,
     blocked_by: str = "AUTOMATED_NIPS",
     db: Optional[Session] = None
 ) -> Dict[str, Any]:
+    invalidate_firewall_cache()
     # Safeguard loopback addresses and invalid targets to avoid severing local development IPC
     if not ip or ip in ("127.0.0.1", "localhost", "0.0.0.0", "Unknown IP") or ip.startswith("127."):
         os_result = {
@@ -157,6 +167,7 @@ def block_ip(
 
 
 def unblock_ip(ip: str, db: Optional[Session] = None) -> Dict[str, Any]:
+    invalidate_firewall_cache()
     os_result = execute_os_unblock(ip)
 
     db_updated = False
@@ -184,8 +195,14 @@ def unblock_ip(ip: str, db: Optional[Session] = None) -> Dict[str, Any]:
 
 
 def get_active_rules(db: Session) -> List[Dict[str, Any]]:
+    global _firewall_cache, _firewall_cache_time
+    import time
+    now = time.time()
+    if _firewall_cache is not None and (now - _firewall_cache_time < 3.0):
+        return _firewall_cache
+
     rules = db.query(FirewallRule).order_by(FirewallRule.timestamp.desc()).all()
-    return [
+    _firewall_cache = [
         {
             "id": r.id,
             "ip_address": r.ip_address,
@@ -196,3 +213,5 @@ def get_active_rules(db: Session) -> List[Dict[str, Any]]:
         }
         for r in rules
     ]
+    _firewall_cache_time = now
+    return _firewall_cache

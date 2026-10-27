@@ -72,23 +72,6 @@ const Dashboard = ({ onInvestigatePacket }) => {
 
   const [activeProtoFilter, setActiveProtoFilter] = useState('ALL');
   const [isResetting, setIsResetting] = useState(false);
-  const [chartKey, setChartKey] = useState(0);
-
-  // Ensure Recharts layout stays active and never disappears when switching tabs or windows
-  React.useEffect(() => {
-    const handleVis = () => {
-      if (!document.hidden) {
-        setChartKey((k) => k + 1);
-      }
-    };
-    window.addEventListener('visibilitychange', handleVis);
-    window.addEventListener('focus', handleVis);
-    return () => {
-      window.removeEventListener('visibilitychange', handleVis);
-      window.removeEventListener('focus', handleVis);
-    };
-  }, []);
-
   // 1. Core Live Metric Calculations (Strictly from real backend status & persisted telemetry)
   const totalPackets = status?.total_packets_captured ?? status?.packet_counter ?? 0;
   const totalSecurityEvents = status?.total_security_events ?? 0;
@@ -104,13 +87,14 @@ const Dashboard = ({ onInvestigatePacket }) => {
   const snifferRunning = status?.sniffer_running ?? false;
   const currentFilterMode = status?.capture_filter_mode || 'soc_filtered';
 
-  // Current PPS (latest from 60-second rolling time-series or server status)
-  const currentPps = (rollingStats.length > 0 ? rollingStats[rollingStats.length - 1].pps : 0) || status?.current_pps || 0;
+  // Current PPS (latest from 3-second rolling time-series or server status)
+  const currentPps = status?.current_pps ?? (rollingStats.length > 0 ? rollingStats[rollingStats.length - 1].pps : 0) ?? 0;
 
-  // Real-time continuous 60-second sliding time-series without arbitrary slicing (peaks and dips flow naturally)
-  const chartStats = useMemo(() => {
-    return rollingStats || [];
-  }, [rollingStats]);
+  // Real-time Line Graph: 20 points spaced strictly by 3 seconds (60-second rolling window)
+  // - Moves slowly and steadily once every 3 seconds
+  // - Shows exact per-second rates (inspected PPS & Mbps)
+  // - Traffic packet volume does NOT affect horizontal movement speed
+  const chartStats = rollingStats;
 
   // Filtered Live Packets for Table (strictly capped at 10 to keep UI lightning fast)
   const displayedPackets = useMemo(() => {
@@ -251,7 +235,7 @@ const Dashboard = ({ onInvestigatePacket }) => {
           </div>
 
           <div className="h-64 w-full relative">
-            <ResponsiveContainer key={`pps-chart-${chartKey}`} width="100%" height={240} minWidth={100} minHeight={240}>
+            <ResponsiveContainer width="100%" height={240} minWidth={100} minHeight={240}>
               <AreaChart data={chartStats}>
                 <defs>
                   <linearGradient id="ppsGradient" x1="0" y1="0" x2="0" y2="1">
@@ -260,17 +244,33 @@ const Dashboard = ({ onInvestigatePacket }) => {
                   </linearGradient>
                 </defs>
                 <CartesianGrid strokeDasharray="3 3" stroke="#f1f5f9" />
-                <XAxis dataKey="time" stroke="#94a3b8" tick={{ fontSize: 10, fill: '#64748b' }} />
+                <XAxis
+                  dataKey="time"
+                  stroke="#94a3b8"
+                  tick={{ fontSize: 10, fill: '#64748b' }}
+                  interval={2}
+                />
                 <YAxis
                   stroke="#94a3b8"
                   tick={{ fontSize: 10, fill: '#64748b' }}
                   allowDecimals={false}
-                  domain={[0, (dataMax) => Math.max(10, Math.ceil(dataMax * 1.2))]}
+                  domain={[0, (dataMax) => Math.max(10, Math.ceil(dataMax * 1.15))]}
                 />
                 <Tooltip
                   contentStyle={{ backgroundColor: '#0f172a', borderColor: '#334155', borderRadius: '8px', color: '#f8fafc', fontSize: '11px' }}
+                  formatter={(val) => [`${val} packets/s`, 'Inspected PPS']}
+                  labelFormatter={(label) => `Time: ${label} (3s cadence)`}
                 />
-                <Area type="monotone" dataKey="pps" stroke="#2563eb" strokeWidth={2} fillOpacity={1} fill="url(#ppsGradient)" name="PPS" isAnimationActive={false} />
+                <Area
+                  type="monotone"
+                  dataKey="pps"
+                  stroke="#2563eb"
+                  strokeWidth={2}
+                  fillOpacity={1}
+                  fill="url(#ppsGradient)"
+                  name="PPS"
+                  isAnimationActive={false}
+                />
               </AreaChart>
             </ResponsiveContainer>
           </div>
@@ -291,7 +291,7 @@ const Dashboard = ({ onInvestigatePacket }) => {
               </div>
             ) : (
               <>
-                <ResponsiveContainer key={`proto-chart-${chartKey}`} width="100%" height={220} minWidth={100} minHeight={220}>
+                <ResponsiveContainer width="100%" height={220} minWidth={100} minHeight={220}>
                   <PieChart>
                     <Pie
                       data={protocolData}
@@ -337,20 +337,27 @@ const Dashboard = ({ onInvestigatePacket }) => {
             </h3>
           </div>
           <div className="h-60 w-full">
-            <ResponsiveContainer key={`thru-chart-${chartKey}`} width="100%" height={230} minWidth={100} minHeight={230}>
+            <ResponsiveContainer width="100%" height={230} minWidth={100} minHeight={230}>
               <LineChart data={chartStats}>
                 <CartesianGrid strokeDasharray="3 3" stroke="#f1f5f9" />
-                <XAxis dataKey="time" stroke="#94a3b8" tick={{ fontSize: 10, fill: '#64748b' }} />
+                <XAxis
+                  dataKey="time"
+                  stroke="#94a3b8"
+                  tick={{ fontSize: 10, fill: '#64748b' }}
+                  interval={2}
+                />
                 <YAxis
                   stroke="#94a3b8"
                   tick={{ fontSize: 10, fill: '#64748b' }}
-                  domain={[0, (dataMax) => Math.max(1, Number((dataMax * 1.2).toFixed(2)))]}
+                  domain={[0, (dataMax) => Math.max(1, Number((dataMax * 1.15).toFixed(2)))]}
                 />
                 <Tooltip
                   contentStyle={{ backgroundColor: '#0f172a', borderColor: '#334155', borderRadius: '8px', color: '#f8fafc', fontSize: '11px' }}
+                  formatter={(val, name) => [`${val} Mbps`, name]}
+                  labelFormatter={(label) => `Time: ${label} (3s cadence)`}
                 />
-                <Line type="monotone" dataKey="inboundMbps" stroke="#059669" strokeWidth={2} dot={false} name="Inbound (Mbps)" isAnimationActive={false} />
-                <Line type="monotone" dataKey="outboundMbps" stroke="#4f46e5" strokeWidth={2} dot={false} name="Outbound (Mbps)" isAnimationActive={false} />
+                <Line type="monotone" dataKey="inboundMbps" stroke="#059669" strokeWidth={2} dot={false} name="Inbound" isAnimationActive={false} />
+                <Line type="monotone" dataKey="outboundMbps" stroke="#4f46e5" strokeWidth={2} dot={false} name="Outbound" isAnimationActive={false} />
               </LineChart>
             </ResponsiveContainer>
           </div>

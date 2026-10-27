@@ -71,9 +71,8 @@ const Sidebar = ({ isOpen, onClose }) => {
 
       {/* Sidebar Shell */}
       <aside
-        className={`fixed lg:sticky top-0 lg:top-16 left-0 z-50 lg:z-20 w-64 bg-white border-r border-slate-200 flex flex-col justify-between shrink-0 h-screen lg:h-[calc(100vh-4rem)] transition-transform duration-200 ease-in-out ${
-          isOpen ? 'translate-x-0' : '-translate-x-full lg:translate-x-0'
-        }`}
+        className={`fixed lg:sticky top-0 lg:top-16 left-0 z-50 lg:z-20 w-64 bg-white border-r border-slate-200 flex flex-col justify-between shrink-0 h-screen lg:h-[calc(100vh-4rem)] transition-transform duration-200 ease-in-out ${isOpen ? 'translate-x-0' : '-translate-x-full lg:translate-x-0'
+          }`}
       >
         <div className="p-4 space-y-4">
           {/* Mobile Header Brand */}
@@ -109,10 +108,9 @@ const Sidebar = ({ isOpen, onClose }) => {
                       if (onClose) onClose();
                     }}
                     className={({ isActive }) =>
-                      `flex items-center gap-3 px-3.5 py-2.5 rounded-xl text-xs font-semibold transition-all ${
-                        isActive
-                          ? 'bg-blue-50 text-blue-700 font-bold border-l-4 border-l-blue-600 shadow-2xs'
-                          : 'text-slate-600 hover:text-slate-900 hover:bg-slate-50'
+                      `flex items-center gap-3 px-3.5 py-2.5 rounded-xl text-xs font-semibold transition-all ${isActive
+                        ? 'bg-blue-50 text-blue-700 font-bold border-l-4 border-l-blue-600 shadow-2xs'
+                        : 'text-slate-600 hover:text-slate-900 hover:bg-slate-50'
                       }`
                     }
                   >

@@ -126,12 +126,14 @@ current_pps = 0
 current_inbound_mbps = 0.0
 current_outbound_mbps = 0.0
 rolling_rate_history: Deque[Dict[str, Any]] = deque(maxlen=60)
-_init_now = datetime.utcnow()
+_init_now = datetime.now()
+_init_utc = datetime.utcnow()
 for _i in range(59, -1, -1):
-    _t = _init_now - timedelta(seconds=_i)
+    _t_local = _init_now - timedelta(seconds=_i)
+    _t_utc = _init_utc - timedelta(seconds=_i)
     rolling_rate_history.append({
-        "time": _t.strftime("%H:%M:%S"),
-        "timestamp": _t.isoformat(),
+        "time": _t_local.strftime("%H:%M:%S"),
+        "timestamp": _t_utc.isoformat() + "Z",
         "pps": 0,
         "inboundMbps": 0.0,
         "outboundMbps": 0.0
@@ -645,7 +647,7 @@ async def rate_calculator_worker():
             time_str = datetime.now().strftime("%H:%M:%S")
             point = {
                 "time": time_str,
-                "timestamp": datetime.utcnow().isoformat(),
+                "timestamp": datetime.utcnow().isoformat() + "Z",
                 "pps": pps,
                 "inboundMbps": current_inbound_mbps,
                 "outboundMbps": current_outbound_mbps
@@ -1336,21 +1338,28 @@ async def get_system_logs(
 # -----------------------------------------------------------------------------
 # API Endpoints — Interactive Network Topology Canvas
 # -----------------------------------------------------------------------------
+_topology_cache: Optional[Dict[str, Any]] = None
+
 @app.get("/api/topology")
 async def get_topology(
     current_user: User = Depends(get_current_user),
     db: Session = Depends(get_db)
 ):
-    """Retrieves stored network architecture node and edge coordinates."""
+    """Retrieves stored network architecture node and edge coordinates with sub-millisecond caching."""
+    global _topology_cache
+    if _topology_cache is not None:
+        return _topology_cache
+
     top = db.query(TopologyState).order_by(TopologyState.updated_at.desc()).first()
     if not top or not top.nodes_json:
         return {"nodes": [], "edges": []}
 
-    return {
+    _topology_cache = {
         "nodes": json.loads(top.nodes_json),
         "edges": json.loads(top.edges_json),
         "updated_at": top.updated_at.isoformat()
     }
+    return _topology_cache
 
 
 @app.post("/api/topology")
@@ -1363,6 +1372,7 @@ async def save_topology(
     Persists updated node coordinates and topology links.
     Strictly restricted to 'admin' role per RBAC specifications.
     """
+    global _topology_cache
     top = db.query(TopologyState).first()
     if not top:
         top = TopologyState(name="default")
@@ -1372,6 +1382,12 @@ async def save_topology(
     top.edges_json = json.dumps(payload.edges)
     top.updated_at = datetime.utcnow()
     db.commit()
+
+    _topology_cache = {
+        "nodes": payload.nodes,
+        "edges": payload.edges,
+        "updated_at": top.updated_at.isoformat()
+    }
 
     return {"message": "Network topology state saved successfully."}
 

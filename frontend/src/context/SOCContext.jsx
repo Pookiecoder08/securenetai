@@ -62,17 +62,15 @@ export const SOCProvider = ({ children }) => {
 
   const [activeModalPacket, setActiveModalPacket] = useState(null);
 
-  // ============================================================
-  // 60-SECOND ROLLING STATISTICS
-  // ============================================================
-
+  // 60-SECOND ROLLING STATISTICS (20 points spaced strictly by 3 seconds)
+  // Ensures line graph updates slowly and steadily once every 3 seconds without freezing
   const generateInitialRollingStats = () => {
     const now = Date.now();
     const arr = [];
-    for (let i = 59; i >= 0; i--) {
-      const t = new Date(now - i * 1000);
+    for (let i = 19; i >= 0; i--) {
+      const t = new Date(now - i * 3000);
       arr.push({
-        time: t.toLocaleTimeString([], { hour: '2-digit', minute: '2-digit', second: '2-digit' }),
+        time: t.toLocaleTimeString([], { hour: '2-digit', minute: '2-digit', second: '2-digit', hour12: false }),
         timestamp: t.toISOString(),
         pps: 0,
         inboundMbps: 0.0,
@@ -109,6 +107,11 @@ export const SOCProvider = ({ children }) => {
   const packetBufferRef = useRef([]);
   const protocolDeltaRef = useRef({});
   const lastHeartbeatTimeRef = useRef(0);
+  const threeSecondBufferRef = useRef({
+    ppsList: [],
+    inboundList: [],
+    outboundList: []
+  });
 
   const packetsThisSecondRef = useRef(0);
   const inboundBytesThisSecondRef = useRef(0);
@@ -187,14 +190,40 @@ export const SOCProvider = ({ children }) => {
       setLastUpdatedTimestamp(Date.now());
       setSecondsAgo(0);
 
-      // Hydrate server-calculated 60s continuous rate series
+      // Hydrate server continuous rate series downsampled into 20 points spaced strictly by 3 seconds
       if (data?.rolling_stats && Array.isArray(data.rolling_stats) && data.rolling_stats.length > 0) {
         setRollingStats((prev) => {
-          if (data.rolling_stats.length >= 60) {
-            return data.rolling_stats.slice(-60);
+          const raw = data.rolling_stats;
+          const points20 = [];
+          const step = 3;
+          for (let i = Math.max(0, raw.length - 60); i < raw.length; i += step) {
+            const chunk = raw.slice(i, i + step);
+            if (chunk.length === 0) continue;
+            const lastPt = chunk[chunk.length - 1];
+            let localTime = lastPt.time;
+            if (lastPt.timestamp) {
+              const d = new Date(lastPt.timestamp.endsWith('Z') || lastPt.timestamp.includes('+') ? lastPt.timestamp : lastPt.timestamp + 'Z');
+              if (!isNaN(d.getTime())) {
+                localTime = d.toLocaleTimeString([], { hour: '2-digit', minute: '2-digit', second: '2-digit', hour12: false });
+              }
+            }
+            const avgPps = Math.round(chunk.reduce((sum, p) => sum + (p.pps || 0), 0) / chunk.length);
+            const avgIn = Number((chunk.reduce((sum, p) => sum + (p.inboundMbps || 0), 0) / chunk.length).toFixed(2));
+            const avgOut = Number((chunk.reduce((sum, p) => sum + (p.outboundMbps || 0), 0) / chunk.length).toFixed(2));
+
+            points20.push({
+              time: localTime || lastPt.time,
+              timestamp: lastPt.timestamp,
+              pps: avgPps,
+              inboundMbps: avgIn,
+              outboundMbps: avgOut
+            });
           }
-          const missingCount = 60 - data.rolling_stats.length;
-          return [...prev.slice(0, missingCount), ...data.rolling_stats];
+          if (points20.length >= 20) {
+            return points20.slice(-20);
+          }
+          const needed = 20 - points20.length;
+          return [...prev.slice(0, needed), ...points20];
         });
       }
 
@@ -240,17 +269,15 @@ export const SOCProvider = ({ children }) => {
   }, [fetchTelemetry]);
 
   // ============================================================
-  // 1 SECOND CLOCK + ROLLING STATISTICS
+  // 1 SECOND CLOCK + 3-SECOND ROLLING STATISTICS FALLBACK
   // ============================================================
 
   useEffect(() => {
     const clockTimer = setInterval(() => {
       setSecondsAgo((prev) => prev + 1);
 
-      // If server RATE_HEARTBEAT is active, rely strictly on server ground truth
-      if (Date.now() - lastHeartbeatTimeRef.current > 2000) {
-        const now = new Date();
-        const timeLabel = now.toLocaleTimeString([], { hour: '2-digit', minute: '2-digit', second: '2-digit' });
+      // Fallback: If server RATE_HEARTBEAT is inactive (> 2500ms), advance 3-second window locally
+      if (Date.now() - lastHeartbeatTimeRef.current > 2500) {
         const currentPps = packetsThisSecondRef.current;
         const inboundMbps = Number(
           ((inboundBytesThisSecondRef.current * 8) / 1_000_000).toFixed(2)
@@ -259,21 +286,40 @@ export const SOCProvider = ({ children }) => {
           ((outboundBytesThisSecondRef.current * 8) / 1_000_000).toFixed(2)
         );
 
-        // Reset counters
+        // Reset per-second counters
         packetsThisSecondRef.current = 0;
         inboundBytesThisSecondRef.current = 0;
         outboundBytesThisSecondRef.current = 0;
 
-        setRollingStats((prev) => {
-          const nextPoint = {
-            time: timeLabel,
-            timestamp: now.toISOString(),
-            pps: currentPps,
-            inboundMbps,
-            outboundMbps
-          };
-          return [...prev.slice(-59), nextPoint];
-        });
+        const buf = threeSecondBufferRef.current;
+        buf.ppsList.push(currentPps);
+        buf.inboundList.push(inboundMbps);
+        buf.outboundList.push(outboundMbps);
+
+        // Only advance graph ONCE every 3 seconds (3 samples accumulated)
+        if (buf.ppsList.length >= 3) {
+          const ppsAvg = Math.round(buf.ppsList.reduce((a, b) => a + b, 0) / buf.ppsList.length);
+          const inAvg = Number((buf.inboundList.reduce((a, b) => a + b, 0) / buf.inboundList.length).toFixed(2));
+          const outAvg = Number((buf.outboundList.reduce((a, b) => a + b, 0) / buf.outboundList.length).toFixed(2));
+
+          buf.ppsList = [];
+          buf.inboundList = [];
+          buf.outboundList = [];
+
+          const now = new Date();
+          const timeLabel = now.toLocaleTimeString([], { hour: '2-digit', minute: '2-digit', second: '2-digit', hour12: false });
+
+          setRollingStats((prev) => {
+            const nextPoint = {
+              time: timeLabel,
+              timestamp: now.toISOString(),
+              pps: ppsAvg,
+              inboundMbps: inAvg,
+              outboundMbps: outAvg
+            };
+            return [...prev.slice(-19), nextPoint];
+          });
+        }
       }
     }, 1000);
 
@@ -281,6 +327,42 @@ export const SOCProvider = ({ children }) => {
       clearInterval(clockTimer);
     };
   }, []);
+
+  // Handle Tab Switching: When returning from a different tab, snap directly to present without backlog catch-up
+  useEffect(() => {
+    let lastHiddenAt = 0;
+    const handleVisibilityChange = () => {
+      if (document.hidden) {
+        lastHiddenAt = Date.now();
+      } else {
+        const elapsedHidden = Date.now() - lastHiddenAt;
+        if (elapsedHidden > 2000) {
+          const now = Date.now();
+          threeSecondBufferRef.current = { ppsList: [], inboundList: [], outboundList: [] };
+          setRollingStats((prev) => {
+            const arr = [];
+            for (let i = 19; i >= 0; i--) {
+              const t = new Date(now - i * 3000);
+              const existing = prev[prev.length - 1 - i];
+              arr.push({
+                time: t.toLocaleTimeString([], { hour: '2-digit', minute: '2-digit', second: '2-digit', hour12: false }),
+                timestamp: t.toISOString(),
+                pps: i < 2 ? (existing?.pps || 0) : 0,
+                inboundMbps: i < 2 ? (existing?.inboundMbps || 0.0) : 0.0,
+                outboundMbps: i < 2 ? (existing?.outboundMbps || 0.0) : 0.0
+              });
+            }
+            return arr;
+          });
+          packetBufferRef.current = [];
+          fetchTelemetry();
+        }
+      }
+    };
+
+    document.addEventListener('visibilitychange', handleVisibilityChange);
+    return () => document.removeEventListener('visibilitychange', handleVisibilityChange);
+  }, [fetchTelemetry]);
 
   // ============================================================
   // 2. FETCH PERSISTED DATABASE DATA
@@ -487,16 +569,37 @@ export const SOCProvider = ({ children }) => {
             }));
           }
 
-          setRollingStats((prev) => {
-            const nextPoint = {
-              time: msg.time || new Date().toLocaleTimeString([], { hour: '2-digit', minute: '2-digit', second: '2-digit' }),
-              timestamp: msg.timestamp || new Date().toISOString(),
-              pps: msg.pps || 0,
-              inboundMbps: msg.inboundMbps || 0.0,
-              outboundMbps: msg.outboundMbps || 0.0
-            };
-            return [...prev.slice(-59), nextPoint];
-          });
+          // Accumulate 1-second sample into the 3-second buffer
+          const buf = threeSecondBufferRef.current;
+          buf.ppsList.push(msg.pps || 0);
+          buf.inboundList.push(msg.inboundMbps || 0.0);
+          buf.outboundList.push(msg.outboundMbps || 0.0);
+
+          // ONLY update rollingStats once every 3 seconds (3 samples accumulated)
+          // This keeps the line graph moving slowly and steadily at 3-second intervals
+          if (buf.ppsList.length >= 3) {
+            const ppsAvg = Math.round(buf.ppsList.reduce((a, b) => a + b, 0) / buf.ppsList.length);
+            const inAvg = Number((buf.inboundList.reduce((a, b) => a + b, 0) / buf.inboundList.length).toFixed(2));
+            const outAvg = Number((buf.outboundList.reduce((a, b) => a + b, 0) / buf.outboundList.length).toFixed(2));
+
+            buf.ppsList = [];
+            buf.inboundList = [];
+            buf.outboundList = [];
+
+            const now = new Date();
+            const timeLabel = now.toLocaleTimeString([], { hour: '2-digit', minute: '2-digit', second: '2-digit', hour12: false });
+
+            setRollingStats((prev) => {
+              const nextPoint = {
+                time: timeLabel,
+                timestamp: msg.timestamp || now.toISOString(),
+                pps: ppsAvg,
+                inboundMbps: inAvg,
+                outboundMbps: outAvg
+              };
+              return [...prev.slice(-19), nextPoint];
+            });
+          }
           return;
         }
 
