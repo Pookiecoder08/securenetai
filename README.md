@@ -44,9 +44,36 @@ Authentication is strictly enforced via Supabase GoTrue. Log in using the creden
 
 ## 3. Supabase Configuration (Database & GoTrue Auth)
 
-### Step 1: Create a Supabase Project
-1. Navigate to [supabase.com](https://supabase.com) and create a new project.
-2. Note your **Project URL**, **Anon Key**, and **Database Password**.
+### Step 1: Create a Supabase Project & Retrieve Credentials
+1. Navigate to [supabase.com](https://supabase.com) and create a new project. During creation, save your **Database Password** (or reset it in settings if forgotten).
+2. Retrieve your project strings using either of the two methods in the new UI:
+
+#### Method A: The Top Header "Connect" Button (Quickest Method)
+- At the top of your Supabase dashboard (next to your project name), click the **Connect** button to open the connection modal:
+  - **For Frontend (`VITE_SUPABASE_URL` & `VITE_SUPABASE_ANON_KEY`):**
+    - Click **App Frameworks** (or select **React / Vite**).
+    - Copy the **Project URL** (`https://[project-ref].supabase.co`).
+    - Copy the **Anon / Publishable Key** (`eyJhbGci...` or `sb_publishable_...`).
+  - **For Backend Database (`DATABASE_URL`):**
+    - Click the **ORMs** or **Database** tab -> choose **URI**.
+    - Select **Session Pooler** (Port `6543`).
+    - Copy the URI string: `postgresql://postgres.[project-ref]:[YOUR-PASSWORD]@aws-0-[region].pooler.supabase.com:6543/postgres`
+    - Replace `[YOUR-PASSWORD]` with your actual database password.
+
+#### Method B: Project Settings (Gear ⚙️ Icon in Left Sidebar)
+- **Database Connection String (`DATABASE_URL`):**
+  - Click ⚙️ **Project Settings** (gear icon at the bottom of the left sidebar).
+  - Select **Database** from the settings menu.
+  - Under **Connection parameters / Connection string**, select the **URI** tab.
+  - Select mode: **Session** (port `6543`).
+  - *(If you forgot your password)*: Scroll down on this same page to **Database password** and click **Reset database password**.
+- **API Keys & URL (`VITE_SUPABASE_URL` & `VITE_SUPABASE_ANON_KEY`):**
+  - In ⚙️ **Project Settings**, select **API** (or **API Keys** / **Data API**).
+  - Under **Project URL**, copy the URL (`https://[project-ref].supabase.co`).
+  - Under **Project API keys**, copy the key labeled `anon` `public` (or `Publishable key`).
+- **Backend JWT Secret (`SUPABASE_JWT_SECRET`):**
+  - In ⚙️ **Project Settings**, select **JWT Keys** (or scroll to **JWT Settings** under **API**).
+  - Copy the **JWT Secret** string.
 
 ### Step 2: Execute Database DDL Schema
 Open the **SQL Editor** in your Supabase dashboard and run the following script to create all required tables:
@@ -196,14 +223,14 @@ In the Supabase Dashboard, navigate to **Authentication -> Users** and click **A
    - Auto Confirm User: **Checked**
    - User Metadata (JSON): `{"role": "employee", "username": "employee"}`
 
-### Step 4: Retrieve Project Keys
-Under **Project Settings -> API**:
-- Copy `Project URL` (e.g., `https://abcdefghijklm.supabase.co`)
-- Copy `anon public key`
-- Copy `JWT Secret` (under **JWT Settings**)
+### Step 4: Summary Mapping of Supabase Strings to Environment Variables
 
-Under **Project Settings -> Database**:
-- Copy the **Connection String (URI / Session Pooler)** (Port: 6543)
+| Variable Name | Found In Supabase UI | Where To Configure | Example Format |
+| :--- | :--- | :--- | :--- |
+| **`VITE_SUPABASE_URL`** | Top "Connect" button -> App Frameworks<br>*or* ⚙️ **Project Settings -> API -> Project URL** | `frontend/.env`<br>Vercel Environment Variables | `https://[ref].supabase.co` |
+| **`VITE_SUPABASE_ANON_KEY`** | Top "Connect" button -> App Frameworks<br>*or* ⚙️ **Project Settings -> API -> anon public key** | `frontend/.env`<br>Vercel Environment Variables | `eyJhbGciOiJIUzI1NiIsIn...` or `sb_publishable_...` |
+| **`DATABASE_URL`** | Top "Connect" button -> ORMs (URI)<br>*or* ⚙️ **Project Settings -> Database -> URI** | `backend/.env` | `postgresql://postgres.[ref]:[password]@aws-0-[region].pooler.supabase.com:6543/postgres` |
+| **`SUPABASE_JWT_SECRET`** | ⚙️ **Project Settings -> JWT Keys**<br>*or* ⚙️ **Project Settings -> API -> JWT Settings** | `backend/.env` | `super-secret-jwt-token-string...` |
 
 ---
 
@@ -249,13 +276,26 @@ python main.py
 ```
 *The engine auto-detects the active network adapter, sets `scapy.config.conf.iface`, and binds to `0.0.0.0:8000` without blocking terminal prompts.*
 
-### Step 4: Expose the Sensor via Ngrok
-In a second terminal window, launch an Ngrok tunnel:
+### Step 4: Expose the Sensor via Ngrok (For Cloud Vercel Access)
 
+If `ngrok` is not installed on your system yet, install it using either method:
+- **Option A (Winget - Fastest):** Run `winget install ngrok.ngrok` in PowerShell, then restart your terminal.
+- **Option B (Direct Download):** Download the Windows 64-bit zip from [ngrok.com/download](https://ngrok.com/download) and place `ngrok.exe` in your `backend/` folder.
+
+Next, authenticate ngrok with your free account token (from [dashboard.ngrok.com](https://dashboard.ngrok.com/get-started/your-authtoken)):
+```bash
+ngrok config add-authtoken <YOUR_AUTHTOKEN>
+```
+
+In a second terminal window, launch the tunnel:
 ```bash
 ngrok http 8000
+# Or if ngrok.exe is placed in the backend folder:
+.\ngrok.exe http 8000
 ```
-Note the generated HTTPS Forwarding URL (e.g., `https://abc1234.ngrok-free.app`).
+Note the generated HTTPS Forwarding URL (e.g., `https://abc1234.ngrok-free.app`). This is your `VITE_SENSOR_API_URL`.
+
+*(Note: If you are running both frontend and backend locally for development, you can simply set `VITE_SENSOR_API_URL=http://localhost:8000` in `frontend/.env` without needing Ngrok).*
 
 ---
 

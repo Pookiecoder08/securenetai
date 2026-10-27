@@ -13,21 +13,52 @@ from jose import JWTError, jwt
 from sqlalchemy.orm import Session
 from sqlalchemy.exc import SQLAlchemyError
 
+import base64
+import json
+import urllib.request
+import urllib.error
+
 from models import User
 from database import get_db
 from security import SECRET_KEY, ALGORITHM
 
-# Supabase JWT Secret (configured via environment, fallback to security SECRET_KEY)
+# Supabase URL & JWT Secret (configured via environment)
+SUPABASE_URL = os.getenv("SUPABASE_URL", os.getenv("VITE_SUPABASE_URL", "https://yztyzrckpunggsckqdvm.supabase.co"))
 SUPABASE_JWT_SECRET = os.getenv("SUPABASE_JWT_SECRET", os.getenv("SECRET_KEY", "SECURENET_SUPER_SECRET_ENTERPRISE_KEY_JWT_2026_NIDS_NIPS"))
 
 # OAuth2 password bearer scheme pointing to the login endpoint (auto_error=False for custom 401 handling)
 oauth2_scheme = OAuth2PasswordBearer(tokenUrl="/api/auth/login", auto_error=False)
 
+_jwks_cache: Optional[dict] = None
+
+
+def get_supabase_jwks() -> Optional[dict]:
+    """Retrieves and caches the Supabase public JWKS for verifying ES256/RS256 tokens."""
+    global _jwks_cache
+    if _jwks_cache:
+        return _jwks_cache
+    if not SUPABASE_URL:
+        return None
+    try:
+        endpoint = SUPABASE_URL.rstrip("/") + "/auth/v1/.well-known/jwks.json"
+        req = urllib.request.Request(endpoint, headers={"User-Agent": "SecureNetAI/1.0"})
+        with urllib.request.urlopen(req, timeout=4) as response:
+            if response.status == 200:
+                _jwks_cache = json.loads(response.read().decode("utf-8"))
+                return _jwks_cache
+    except (urllib.error.URLError, urllib.error.HTTPError, ValueError, OSError):
+        pass
+    return None
+
 
 def decode_supabase_jwt(token: str) -> dict:
     """
-    Decodes and validates a Supabase JWT Bearer token using SUPABASE_JWT_SECRET.
-    Gracefully handles HS256 and RS256 algorithms and ignores audience checks.
+    Decodes and validates a Supabase JWT Bearer token.
+    Supports:
+    1. Modern Supabase Asymmetric ECDSA tokens (ES256 via public JWKS endpoint)
+    2. Symmetric HS256 tokens (literal SUPABASE_JWT_SECRET or base64-decoded raw bytes)
+    3. RS256 RSA signing keys
+    4. Local development SECRET_KEY fallback
     """
     credentials_exception = HTTPException(
         status_code=status.HTTP_401_UNAUTHORIZED,
@@ -37,7 +68,28 @@ def decode_supabase_jwt(token: str) -> dict:
     if not token:
         raise credentials_exception
 
-    # 1. Attempt verification with SUPABASE_JWT_SECRET
+    try:
+        header = jwt.get_unverified_header(token)
+        alg = header.get("alg", "HS256")
+    except Exception:
+        alg = "HS256"
+
+    # 1. Asymmetric verification via Supabase JWKS (for ES256 / RS256 tokens)
+    if alg in ["ES256", "RS256"]:
+        jwks = get_supabase_jwks()
+        if jwks:
+            try:
+                payload = jwt.decode(
+                    token,
+                    jwks,
+                    algorithms=[alg],
+                    options={"verify_aud": False}
+                )
+                return payload
+            except Exception:
+                pass
+
+    # 2. Symmetric verification with literal SUPABASE_JWT_SECRET (HS256 / RS256)
     try:
         payload = jwt.decode(
             token,
@@ -46,10 +98,23 @@ def decode_supabase_jwt(token: str) -> dict:
             options={"verify_aud": False}
         )
         return payload
-    except JWTError:
+    except Exception:
         pass
 
-    # 2. Backward compatibility fallback: verify with local SECRET_KEY
+    # 3. Symmetric verification with Base64-decoded SUPABASE_JWT_SECRET
+    try:
+        decoded_bytes = base64.b64decode(SUPABASE_JWT_SECRET)
+        payload = jwt.decode(
+            token,
+            decoded_bytes,
+            algorithms=["HS256"],
+            options={"verify_aud": False}
+        )
+        return payload
+    except Exception:
+        pass
+
+    # 4. Backward compatibility fallback: verify with local SECRET_KEY
     try:
         payload = jwt.decode(
             token,
@@ -58,7 +123,7 @@ def decode_supabase_jwt(token: str) -> dict:
             options={"verify_aud": False}
         )
         return payload
-    except JWTError:
+    except Exception:
         raise credentials_exception
 
 
