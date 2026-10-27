@@ -93,8 +93,11 @@ export const SOCProvider = ({ children }) => {
 
   const packetsThisSecondRef = useRef(0);
   const inboundBytesThisSecondRef = useRef(0);
-  const outboundBytesThisSecondRef = useRef(0);
   const lastPacketCounterRef = useRef(0);
+  const firewallRulesRef = useRef(firewallRules);
+  useEffect(() => {
+    firewallRulesRef.current = firewallRules;
+  }, [firewallRules]);
 
   const addToast = useCallback((toast) => {
     toastCounterRef.current += 1;
@@ -476,57 +479,66 @@ export const SOCProvider = ({ children }) => {
 
           if (msg.is_threat) {
             const rawSev = (msg.severity || 'Medium').toLowerCase();
-            // User requirement: small threats are blocked automatically and the admin is not disturbed continuously.
-            // Only pop up high-priority toasts for Critical and High severity intrusions.
-            if (rawSev === 'critical' || rawSev === 'high') {
-              addToast({
-                title:
-                  msg.threat_type ||
-                  'Malicious Intrusion Detected',
+            const srcIp = msg.src_ip || msg.source_ip;
 
-                severity: rawSev,
+            // Check if IP is already restricted in active firewall rules
+            const isAlreadyBlocked = srcIp && firewallRulesRef.current?.some(
+              (r) => r.ip_address === srcIp && r.is_active
+            );
 
-                description:
-                  `${msg.src_ip} targeted ` +
-                  `${msg.dst_ip}:` +
-                  `${msg.dst_port || 'n/a'} ` +
-                  `via ${msg.protocol}.`,
+            // User requirement: "if a threat can be aurtoblocked then dont show it in threat and dont just put in some fake notification about threats"
+            const isAutoBlockedOrEligible =
+              isAlreadyBlocked ||
+              msg.auto_blocked ||
+              msg.can_be_autoblocked ||
+              msg.response_status === 'EXECUTED' ||
+              rawSev === 'low' ||
+              rawSev === 'medium' ||
+              (msg.risk_score !== undefined && msg.risk_score !== null && msg.risk_score < 65);
 
-                source_ip: msg.src_ip,
-                packet: msg
+            if (!isAutoBlockedOrEligible && srcIp && srcIp !== 'Unknown IP') {
+              // Only pop up high-priority toasts for Critical and High severity intrusions requiring operator action
+              if (rawSev === 'critical' || rawSev === 'high') {
+                addToast({
+                  type: 'threat',
+                  title:
+                    msg.threat_type ||
+                    'Malicious Intrusion Detected',
+                  severity: rawSev,
+                  description:
+                    `${srcIp} targeted ` +
+                    `${msg.dst_ip}:` +
+                    `${msg.dst_port || 'n/a'} ` +
+                    `via ${msg.protocol}.`,
+                  source_ip: srcIp,
+                  packet: msg
+                });
+              }
+
+              // Add threat to threat list ONLY if it cannot be auto-blocked and is not already blocked
+              setThreats((prev) => {
+                const alreadyExists =
+                  prev.some(
+                    (t) =>
+                      t.id === msg.id ||
+                      (
+                        t.src_ip === srcIp &&
+                        t.threat_type === msg.threat_type
+                      )
+                  );
+
+                if (alreadyExists) {
+                  return prev;
+                }
+
+                return [
+                  msg,
+                  ...prev
+                ];
               });
             }
 
-            // -----------------------------------------------
-            // ADD THREAT TO THREAT LIST
-            // -----------------------------------------------
-
-            setThreats((prev) => {
-              const alreadyExists =
-                prev.some(
-                  (t) =>
-                    t.id === msg.id ||
-                    (
-                      t.src_ip === msg.src_ip &&
-                      t.threat_type ===
-                        msg.threat_type
-                    )
-                );
-
-              if (alreadyExists) {
-                return prev;
-              }
-
-              return [
-                msg,
-                ...prev
-              ];
-            });
-
-            // -----------------------------------------------
             // REFRESH TELEMETRY
-            // -----------------------------------------------
-
             fetchTelemetry();
           }
         }
@@ -667,23 +679,95 @@ export const SOCProvider = ({ children }) => {
     ipAddress,
     reason = 'Operator Enforcement'
   ) => {
-    const result =
-      await apiClient.blockFirewallIp(
-        ipAddress,
-        reason
-      );
+    if (!ipAddress || ipAddress === 'Unknown IP') return;
 
-    await Promise.all([
-      refreshPersistedData(),
-      fetchTelemetry()
-    ]);
-
-    addToast({
-      title: 'Firewall Rule Enforced',
-      severity: 'info',
-      description:
-        `Drop policy active for ${ipAddress}.`
+    // 1. Optimistic local state update for instantaneous UI feedback
+    setFirewallRules((prev) => {
+      if (prev.some((r) => r.ip_address === ipAddress && r.is_active)) return prev;
+      return [
+        {
+          id: Date.now(),
+          ip_address: ipAddress,
+          reason,
+          blocked_by: 'OPERATOR',
+          timestamp: new Date().toISOString(),
+          is_active: true
+        },
+        ...prev
+      ];
     });
+
+    // 2. Optimistic removal of threats matching this IP
+    setThreats((prev) => prev.filter((t) => t.src_ip !== ipAddress && t.source_ip !== ipAddress));
+
+    // 3. Fast backend call
+    const result = await apiClient.blockFirewallIp(ipAddress, reason);
+
+    // 4. Non-intrusive system notification (NOT a fake threat alert)
+    addToast({
+      type: 'system',
+      title: 'Firewall Rule Enforced',
+      severity: 'success',
+      description: `Drop policy active for ${ipAddress}.`
+    });
+
+    // 5. Non-blocking background sync
+    Promise.allSettled([
+      apiClient.getFirewallRules().then((rules) => rules && setFirewallRules(rules)),
+      fetchTelemetry()
+    ]).catch(() => {});
+
+    return result;
+  };
+
+  const handleResolveThreat = async (
+    threat,
+    reason = 'Operator Threat Mitigation'
+  ) => {
+    const ipAddress = threat.src_ip || threat.source_ip;
+    if (!ipAddress || ipAddress === 'Unknown IP') return;
+    const threatId = threat.id;
+
+    // 1. Optimistic removal from threats list instantly
+    setThreats((prev) => prev.filter((t) => (t.id !== threatId && t.src_ip !== ipAddress)));
+
+    // 2. Optimistic firewall rule addition
+    setFirewallRules((prev) => {
+      if (prev.some((r) => r.ip_address === ipAddress && r.is_active)) return prev;
+      return [
+        {
+          id: Date.now(),
+          ip_address: ipAddress,
+          reason: threat.threat_type || reason,
+          blocked_by: 'OPERATOR_RESOLVE',
+          timestamp: new Date().toISOString(),
+          is_active: true
+        },
+        ...prev
+      ];
+    });
+
+    // 3. Fast call to resolve endpoint
+    let result;
+    try {
+      result = await apiClient.resolveThreat(ipAddress, threat.threat_type || reason, typeof threatId === 'number' ? threatId : null);
+    } catch {
+      result = await apiClient.blockFirewallIp(ipAddress, threat.threat_type || reason);
+    }
+
+    // 4. Clean system toast feedback
+    addToast({
+      type: 'system',
+      title: 'Threat Mitigated & Blocked',
+      severity: 'success',
+      description: `Drop rule enforced against ${ipAddress}. Threat mitigated.`
+    });
+
+    // 5. Background sync
+    Promise.allSettled([
+      apiClient.getFirewallRules().then((rules) => rules && setFirewallRules(rules)),
+      fetchTelemetry()
+    ]).catch(() => {});
 
     return result;
   };
@@ -691,22 +775,24 @@ export const SOCProvider = ({ children }) => {
   const handleUnblockIp = async (
     ipAddress
   ) => {
-    const result =
-      await apiClient.unblockFirewallIp(
-        ipAddress
-      );
+    if (!ipAddress) return;
 
-    await Promise.all([
-      refreshPersistedData(),
-      fetchTelemetry()
-    ]);
+    // Optimistic removal from firewall rules
+    setFirewallRules((prev) => prev.filter((r) => r.ip_address !== ipAddress));
+
+    const result = await apiClient.unblockFirewallIp(ipAddress);
 
     addToast({
+      type: 'system',
       title: 'Firewall Rule Revoked',
       severity: 'info',
-      description:
-        `Drop rule removed for ${ipAddress}.`
+      description: `Drop rule removed for ${ipAddress}.`
     });
+
+    Promise.allSettled([
+      apiClient.getFirewallRules().then((rules) => rules && setFirewallRules(rules)),
+      fetchTelemetry()
+    ]).catch(() => {});
 
     return result;
   };
@@ -817,6 +903,7 @@ export const SOCProvider = ({ children }) => {
 
     // Actions
     blockIp: handleBlockIp,
+    resolveThreat: handleResolveThreat,
     unblockIp: handleUnblockIp,
     setFilterMode: handleSetFilterMode,
     resetSession: handleResetSession,

@@ -420,6 +420,8 @@ def process_packet_bytes(raw_data: bytes):
     risk_band_val = "Low"
     ai_anomaly_val = 0
     response_outcome = "MONITOR"
+    is_auto_blocked = False
+    can_be_autoblocked = False
 
     if is_threat:
         threat_counter += 1
@@ -486,8 +488,28 @@ def process_packet_bytes(raw_data: bytes):
             )
             response_outcome = decision.get("status", "SIMULATED")
 
+            # Check if source IP is already restricted in active firewall rules
+            already_blocked_rule = db_session.query(FirewallRule).filter(
+                FirewallRule.ip_address == target_block_ip,
+                FirewallRule.is_active == True
+            ).first()
+
+            if already_blocked_rule:
+                is_auto_blocked = True
+                can_be_autoblocked = True
+                response_outcome = "ALREADY_RESTRICTED"
+                threat_rec.status = "MITIGATED"
+                threat_rec.notes = "Suppressed: Source IP is already restricted in active kernel firewall rules."
+            elif decision.get("recommended_action") == "AUTO_BLOCK_SMALL_THREAT" or decision.get("action_type") == "AUTO_BLOCK":
+                is_auto_blocked = True
+                can_be_autoblocked = True
+                threat_rec.status = "AUTO_BLOCKED"
+                threat_rec.notes = "Auto-mitigated silently by background NIPS policy."
+            elif (severity or "").lower() in ("low", "medium") or risk_score_val < 65:
+                can_be_autoblocked = True
+
             # 5. Execute Authorized Automated or Simulated Action
-            if decision.get("is_eligible") and decision.get("action_type") == "BLOCK":
+            if decision.get("is_eligible") and decision.get("action_type") == "BLOCK" and not already_blocked_rule:
                 ResponseExecutionManager.execute_response(
                     db=db_session,
                     target_ip=target_block_ip,
@@ -517,6 +539,8 @@ def process_packet_bytes(raw_data: bytes):
         "risk_band": risk_band_val,
         "ai_anomaly_score": ai_anomaly_val,
         "response_status": response_outcome,
+        "auto_blocked": is_auto_blocked,
+        "can_be_autoblocked": can_be_autoblocked,
         "payload_hex": payload_hex,
         "payload_ascii": payload_ascii
     }
@@ -874,6 +898,12 @@ class UnblockRequest(BaseModel):
     ip_address: str
 
 
+class ThreatResolveRequest(BaseModel):
+    ip_address: str
+    reason: Optional[str] = "Operator Mitigated Threat"
+    threat_id: Optional[int] = None
+
+
 class TopologyPayload(BaseModel):
     nodes: List[Dict[str, Any]]
     edges: List[Dict[str, Any]]
@@ -1018,8 +1048,65 @@ async def block_firewall_rule(
         blocked_by=f"MANUAL_{current_user.username.upper()}",
         db=db
     )
+    # Sync matching open threats to MITIGATED
+    try:
+        open_threats = db.query(ThreatDetection).filter(
+            ThreatDetection.src_ip == payload.ip_address,
+            ThreatDetection.status == "OPEN"
+        ).all()
+        for ot in open_threats:
+            ot.status = "MITIGATED"
+            ot.assigned_to = current_user.username
+        db.commit()
+    except Exception as e:
+        print(f"[Threat Sync Warning] {e}")
+
     return {
         "message": f"Firewall drop enforced against {payload.ip_address}",
+        "data": result
+    }
+
+
+@app.post("/api/threats/resolve")
+async def resolve_threat_endpoint(
+    payload: ThreatResolveRequest,
+    current_user: User = Depends(require_role(["admin", "analyst"])),
+    db: Session = Depends(get_db)
+):
+    """
+    Instantly mitigates and resolves threat:
+    Enforces active firewall kernel drop and updates ThreatDetection workflow status.
+    """
+    result = firewall.block_ip(
+        ip=payload.ip_address,
+        reason=payload.reason or "Operator Threat Mitigation",
+        blocked_by=f"MANUAL_{current_user.username.upper()}",
+        db=db
+    )
+
+    try:
+        if payload.threat_id:
+            t = db.query(ThreatDetection).filter(ThreatDetection.id == payload.threat_id).first()
+            if t:
+                t.status = "MITIGATED"
+                t.assigned_to = current_user.username
+                t.notes = f"Mitigated via operator resolve by {current_user.username}."
+
+        # Also update any other OPEN threats with this src_ip
+        other_threats = db.query(ThreatDetection).filter(
+            ThreatDetection.src_ip == payload.ip_address,
+            ThreatDetection.status == "OPEN"
+        ).all()
+        for ot in other_threats:
+            ot.status = "MITIGATED"
+            ot.assigned_to = current_user.username
+
+        db.commit()
+    except Exception as e:
+        print(f"[Threat Resolution DB Sync Notice] {e}")
+
+    return {
+        "message": f"Threat mitigated. Firewall drop enforced against {payload.ip_address}",
         "data": result
     }
 
@@ -1058,18 +1145,40 @@ async def get_packets(
 @app.get("/api/threats")
 async def get_threats(
     limit: int = Query(100, ge=1, le=500),
+    include_all: bool = Query(False),
     current_user: User = Depends(get_current_user),
     db: Session = Depends(get_db)
 ):
     """Returns genuine threat-signature matches from the packet audit ledger."""
-    records = (
-        db.query(PacketLog)
-        .filter(PacketLog.is_threat == True)
-        .order_by(PacketLog.timestamp.desc())
-        .limit(limit)
-        .all()
-    )
-    return [serialize_packet_log(record) for record in records]
+    # Active firewall blocked IPs
+    active_blocked_ips = {
+        r.ip_address for r in db.query(FirewallRule.ip_address).filter(FirewallRule.is_active == True).all()
+    }
+
+    query = db.query(PacketLog).filter(PacketLog.is_threat == True)
+
+    # User requirement: If a threat can be auto-blocked or is already blocked, don't show it in threats!
+    if not include_all:
+        if active_blocked_ips:
+            query = query.filter(~PacketLog.src_ip.in_(active_blocked_ips))
+        query = query.filter(
+            ~PacketLog.threat_type.ilike("%probe%"),
+            ~PacketLog.threat_type.ilike("%reconnaissance%")
+        )
+
+    records = query.order_by(PacketLog.timestamp.desc()).limit(limit).all()
+    serialized = []
+    for record in records:
+        data = serialize_packet_log(record)
+        data["is_blocked"] = record.src_ip in active_blocked_ips
+        data["can_be_autoblocked"] = (
+            data["is_blocked"] or
+            (data.get("severity") or "").lower() in ("low", "medium") or
+            "probe" in (record.threat_type or "").lower() or
+            "scan" in (record.threat_type or "").lower()
+        )
+        serialized.append(data)
+    return serialized
 
 
 @app.get("/api/alerts")
@@ -1078,10 +1187,16 @@ async def get_alerts(
     current_user: User = Depends(get_current_user),
     db: Session = Depends(get_db)
 ):
-    """Builds the alert feed from actual detected threats, never synthetic events."""
+    """Builds the alert feed from actual detected threats, excluding already mitigated/blocked IPs."""
+    active_blocked_ips = {
+        r.ip_address for r in db.query(FirewallRule.ip_address).filter(FirewallRule.is_active == True).all()
+    }
+    query = db.query(PacketLog).filter(PacketLog.is_threat == True)
+    if active_blocked_ips:
+        query = query.filter(~PacketLog.src_ip.in_(active_blocked_ips))
+
     records = (
-        db.query(PacketLog)
-        .filter(PacketLog.is_threat == True)
+        query
         .order_by(PacketLog.timestamp.desc())
         .limit(limit)
         .all()

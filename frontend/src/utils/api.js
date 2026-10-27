@@ -178,11 +178,15 @@ export class APIClient {
     });
   }
 
-  // --------------------------------------------------------------------------
-  // Threats & Anomalies
-  // --------------------------------------------------------------------------
-  async getThreats(limit = 100) {
-    return await this.request(`/api/threats?limit=${limit}`);
+  async getThreats(limit = 100, includeAll = false) {
+    return await this.request(`/api/threats?limit=${limit}&include_all=${includeAll}`);
+  }
+
+  async resolveThreat(ip_address, reason = 'Operator Threat Mitigation', threat_id = null) {
+    return await this.request('/api/threats/resolve', {
+      method: 'POST',
+      body: JSON.stringify({ ip_address, reason, threat_id })
+    });
   }
 
   // --------------------------------------------------------------------------

@@ -10,7 +10,8 @@ const ThreatToast = ({
   const [isResolving, setIsResolving] = useState(false);
   const [resolveSuccess, setResolveSuccess] = useState(false);
 
-  if (!threat) return null;
+  const srcIp = threat?.src_ip || threat?.source_ip || '';
+  if (!threat || !srcIp || srcIp === 'Unknown IP') return null;
 
   const handleResolveClick = async () => {
     if (isResolving) return;
@@ -29,7 +30,6 @@ const ThreatToast = ({
   };
 
   const threatTitle = threat.threat_type || threat.title || 'Security Signature Match';
-  const srcIp = threat.src_ip || threat.source_ip || 'Unknown IP';
   const severity = (threat.severity || threat.threat_severity || 'Critical').toUpperCase();
 
   return (

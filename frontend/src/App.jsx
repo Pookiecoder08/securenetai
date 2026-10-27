@@ -6,6 +6,7 @@ import ProtectedRoute from './components/ProtectedRoute';
 import Navbar from './components/Navbar';
 import Sidebar from './components/Sidebar';
 import ThreatToast from './components/ThreatToast';
+import SystemToast from './components/SystemToast';
 import PacketModal from './components/PacketModal';
 
 import Login from './pages/Login';
@@ -74,6 +75,7 @@ function AppContent() {
     toasts,
     removeToast,
     blockIp,
+    resolveThreat,
     activeModalPacket,
     setActiveModalPacket
   } = useSOC();
@@ -161,21 +163,43 @@ function AppContent() {
       {/* Floating Right Threat Alert Toasts */}
       <div className="fixed bottom-4 right-4 z-50 flex flex-col gap-3 max-w-md w-full pointer-events-none">
         <div className="pointer-events-auto space-y-3">
-          {toasts.map((toast) => (
-            <ThreatToast
-              key={toast.id}
-              threat={toast.packet || toast}
-              onInvestigate={(pkt) => {
-                setActiveModalPacket(pkt || toast.packet);
-                removeToast(toast.id);
-              }}
-              onDismiss={() => removeToast(toast.id)}
-              onResolve={(t) => {
-                blockIp(t.src_ip || t.source_ip, t.threat_type || 'Alert Toast Quick Resolution');
-                removeToast(toast.id);
-              }}
-            />
-          ))}
+          {toasts.map((toast) => {
+            const isThreatToast =
+              toast.type === 'threat' &&
+              (toast.source_ip || toast.packet?.src_ip) &&
+              toast.source_ip !== 'Unknown IP' &&
+              toast.packet?.src_ip !== 'Unknown IP';
+
+            if (!isThreatToast) {
+              return (
+                <SystemToast
+                  key={toast.id}
+                  toast={toast}
+                  onDismiss={() => removeToast(toast.id)}
+                />
+              );
+            }
+
+            return (
+              <ThreatToast
+                key={toast.id}
+                threat={toast.packet || toast}
+                onInvestigate={(pkt) => {
+                  setActiveModalPacket(pkt || toast.packet);
+                  removeToast(toast.id);
+                }}
+                onDismiss={() => removeToast(toast.id)}
+                onResolve={async (t) => {
+                  if (resolveThreat) {
+                    await resolveThreat(t);
+                  } else {
+                    await blockIp(t.src_ip || t.source_ip, t.threat_type || 'Alert Toast Quick Resolution');
+                  }
+                  removeToast(toast.id);
+                }}
+              />
+            );
+          })}
         </div>
       </div>
 

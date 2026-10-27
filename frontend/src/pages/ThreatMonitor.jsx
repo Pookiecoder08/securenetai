@@ -1,4 +1,4 @@
-import React, { useState, useEffect, useMemo } from 'react';
+import React, { useState, useEffect, useMemo, useCallback } from 'react';
 import { useAuth } from '../context/AuthContext';
 import { useSOC } from '../context/SOCContext';
 import PacketModal from '../components/PacketModal';
@@ -14,40 +14,64 @@ import {
   FileCode,
   ArrowRight,
   RefreshCw,
-  Loader2
+  Loader2,
+  ShieldCheck
 } from 'lucide-react';
 import { apiClient } from '../api/client';
 
 const ThreatMonitor = () => {
   const { isEmployee } = useAuth();
-  const { threats, blockIp, refreshPersistedData } = useSOC();
+  const { threats, resolveThreat, firewallRules } = useSOC();
 
   const [dbThreats, setDbThreats] = useState([]);
   const [isLoading, setIsLoading] = useState(true);
   const [selectedPacket, setSelectedPacket] = useState(null);
-  const [activeTab, setActiveTab] = useState('ALL');
+  const [activeTab, setActiveTab] = useState('ACTION REQUIRED');
   const [searchTerm, setSearchTerm] = useState('');
   const [actionFeedback, setActionFeedback] = useState(null);
+  const [resolvingId, setResolvingId] = useState(null);
+
+  // Set of actively blocked IPs from firewall rules
+  const activeBlockedIpSet = useMemo(() => {
+    const set = new Set();
+    (firewallRules || []).forEach((r) => {
+      if (r.is_active && r.ip_address) set.add(r.ip_address);
+    });
+    return set;
+  }, [firewallRules]);
+
+  // Evaluates whether a threat is eligible for silent automatic blocking or is already restricted
+  const canBeAutoBlocked = useCallback((t) => {
+    if (!t) return false;
+    if (t.auto_blocked || t.can_be_autoblocked) return true;
+    if (['EXECUTED', 'AUTO_BLOCKED', 'MITIGATED', 'RESOLVED', 'ALREADY_RESTRICTED'].includes(t.response_status || t.status)) return true;
+    const sev = (t.severity || '').toLowerCase();
+    if (sev === 'low' || sev === 'medium') return true;
+    if (t.risk_score !== undefined && t.risk_score !== null && t.risk_score < 65) return true;
+    if (t.src_ip && activeBlockedIpSet.has(t.src_ip)) return true;
+    return false;
+  }, [activeBlockedIpSet]);
 
   // Fetch persisted threats from GET /api/threats
-  const loadThreats = async () => {
-    setIsLoading(true);
+  const loadThreats = async (showSpinner = true) => {
+    if (showSpinner) setIsLoading(true);
     try {
-      const data = await apiClient.getThreats(100);
+      // By default fetch only actionable threats
+      const data = await apiClient.getThreats(100, false);
       setDbThreats(data || []);
     } catch (err) {
       console.error('Error fetching threats:', err);
     } finally {
-      setIsLoading(false);
+      if (showSpinner) setIsLoading(false);
     }
   };
 
   useEffect(() => {
-    loadThreats();
+    loadThreats(true);
   }, []);
 
   // Merge live WS threats with persisted threats (deduplicated)
-  const combinedThreats = useMemo(() => {
+  const allCombinedThreats = useMemo(() => {
     const map = new Map();
     dbThreats.forEach((t) => map.set(t.id || `${t.src_ip}-${t.timestamp}`, t));
     threats.forEach((t) => map.set(t.id || `${t.src_ip}-${t.timestamp}`, t));
@@ -56,11 +80,27 @@ const ThreatMonitor = () => {
     );
   }, [dbThreats, threats]);
 
-  // Filtering
+  // Active threats requiring operator review (user requirement: auto-blocked threats are omitted)
+  const activeThreats = useMemo(() => {
+    return allCombinedThreats.filter((t) => !canBeAutoBlocked(t));
+  }, [allCombinedThreats, canBeAutoBlocked]);
+
+  // Auto-blocked / mitigated threats ledger
+  const autoBlockedThreats = useMemo(() => {
+    return allCombinedThreats.filter((t) => canBeAutoBlocked(t));
+  }, [allCombinedThreats, canBeAutoBlocked]);
+
+  // Filtered view based on tab selection
   const filteredThreats = useMemo(() => {
-    return combinedThreats.filter((t) => {
+    let list = activeThreats;
+    if (activeTab === 'AUTO-BLOCKED / MITIGATED') {
+      list = autoBlockedThreats;
+    }
+
+    return list.filter((t) => {
       const sev = (t.severity || 'Medium').toUpperCase();
-      if (activeTab !== 'ALL' && sev !== activeTab) return false;
+      if (activeTab === 'CRITICAL' && sev !== 'CRITICAL') return false;
+      if (activeTab === 'HIGH' && sev !== 'HIGH') return false;
       if (searchTerm) {
         const q = searchTerm.toLowerCase();
         return (
@@ -72,39 +112,70 @@ const ThreatMonitor = () => {
       }
       return true;
     });
-  }, [combinedThreats, activeTab, searchTerm]);
+  }, [activeThreats, autoBlockedThreats, activeTab, searchTerm]);
 
-  // Handle Threat Resolution & Block
+  // Handle Threat Resolution & Block (High Performance, Instant UI Update)
   const handleResolveThreat = async (threat) => {
     if (isEmployee || !threat.src_ip) return;
+    const threatKey = threat.id || `${threat.src_ip}-${threat.timestamp}`;
+    setResolvingId(threatKey);
     setActionFeedback(null);
+
+    // 1. Instant optimistic local removal from UI
+    setDbThreats((prev) =>
+      prev.filter((t) => (t.id || `${t.src_ip}-${t.timestamp}`) !== threatKey && t.src_ip !== threat.src_ip)
+    );
+
     try {
-      await blockIp(threat.src_ip, threat.threat_type || 'Threat Monitor Mitigation');
-      setActionFeedback({ success: true, message: `Drop rule enforced against ${threat.src_ip}. Threat mitigated.` });
-      loadThreats();
+      // 2. Enforce active kernel drop via resolveThreat
+      await resolveThreat(threat);
+      setActionFeedback({
+        success: true,
+        message: `Drop rule enforced against ${threat.src_ip}. Threat mitigated.`
+      });
+
+      // 3. Background sync without freezing table
+      loadThreats(false);
     } catch (err) {
-      setActionFeedback({ success: false, message: err.message || 'Failed to enforce block.' });
+      setActionFeedback({
+        success: false,
+        message: err.message || 'Failed to enforce block.'
+      });
+      loadThreats(false);
+    } finally {
+      setResolvingId(null);
     }
   };
 
-  const totalDetected = combinedThreats.length;
-  const criticalCount = combinedThreats.filter((t) => (t.severity || '').toLowerCase() === 'critical').length;
-  const highCount = combinedThreats.filter((t) => (t.severity || '').toLowerCase() === 'high').length;
-  const minorCount = combinedThreats.filter((t) => ['low', 'medium'].includes((t.severity || '').toLowerCase())).length;
+  const actionableCount = activeThreats.length;
+  const criticalCount = activeThreats.filter((t) => (t.severity || '').toLowerCase() === 'critical').length;
+  const autoBlockedCount = autoBlockedThreats.length;
 
   return (
     <div className="p-4 sm:p-6 space-y-6 max-w-7xl mx-auto">
-      {/* Action Feedback */}
+      {/* Action Feedback Notification */}
       {actionFeedback && (
         <div
-          className={`p-3 rounded-xl border text-xs font-mono flex items-center gap-2 ${
+          className={`p-3 rounded-xl border text-xs font-mono flex items-center justify-between gap-2 animate-in fade-in ${
             actionFeedback.success
-              ? 'bg-emerald-50 border-emerald-200 text-emerald-700'
-              : 'bg-rose-50 border-rose-200 text-rose-700'
+              ? 'bg-emerald-50 border-emerald-200 text-emerald-800'
+              : 'bg-rose-50 border-rose-200 text-rose-800'
           }`}
         >
-          {actionFeedback.success ? <CheckCircle2 className="w-4 h-4 text-emerald-600" /> : <AlertTriangle className="w-4 h-4 text-rose-600" />}
-          <span>{actionFeedback.message}</span>
+          <div className="flex items-center gap-2">
+            {actionFeedback.success ? (
+              <CheckCircle2 className="w-4 h-4 text-emerald-600 shrink-0" />
+            ) : (
+              <AlertTriangle className="w-4 h-4 text-rose-600 shrink-0" />
+            )}
+            <span>{actionFeedback.message}</span>
+          </div>
+          <button
+            onClick={() => setActionFeedback(null)}
+            className="text-slate-400 hover:text-slate-600 text-xs px-2 py-0.5"
+          >
+            ×
+          </button>
         </div>
       )}
 
@@ -112,158 +183,221 @@ const ThreatMonitor = () => {
       <div className="grid grid-cols-1 sm:grid-cols-3 gap-4">
         <div className="soc-card rounded-2xl p-5 bg-white border border-slate-200">
           <div className="flex items-center justify-between text-xs font-mono text-slate-500 mb-1">
-            <span>Detected Threats</span>
+            <span>Action Required</span>
             <ShieldAlert className="w-4 h-4 text-rose-600" />
           </div>
           <div className="text-2xl font-extrabold font-mono text-rose-600">
-            {totalDetected}
+            {actionableCount}
           </div>
+          <p className="text-[11px] text-slate-400 font-sans mt-1">
+            High &amp; Critical threats requiring analyst approval
+          </p>
         </div>
 
         <div className="soc-card rounded-2xl p-5 bg-white border border-slate-200">
           <div className="flex items-center justify-between text-xs font-mono text-slate-500 mb-1">
-            <span>Critical / High Severity</span>
+            <span>Critical Severity</span>
             <AlertTriangle className="w-4 h-4 text-amber-600" />
           </div>
           <div className="text-2xl font-extrabold font-mono text-amber-600">
-            {criticalCount + highCount}
+            {criticalCount}
           </div>
+          <p className="text-[11px] text-slate-400 font-sans mt-1">
+            Zero-tolerance exploits (SQLi, Remote Code Execution)
+          </p>
         </div>
 
         <div className="soc-card rounded-2xl p-5 bg-white border border-slate-200">
           <div className="flex items-center justify-between text-xs font-mono text-slate-500 mb-1">
-            <span>Automatically Mitigated</span>
+            <span>Auto-Mitigated by NIPS</span>
             <CheckCircle2 className="w-4 h-4 text-emerald-600" />
           </div>
           <div className="text-2xl font-extrabold font-mono text-emerald-600">
-            {minorCount}
+            {autoBlockedCount}
           </div>
+          <p className="text-[11px] text-slate-400 font-sans mt-1">
+            Minor intrusions auto-blocked silently without disturbing admin
+          </p>
         </div>
       </div>
 
       {/* Filter and Search Bar */}
       <div className="soc-card rounded-2xl p-3 bg-white flex flex-wrap items-center justify-between gap-3 border border-slate-200">
-        <div className="flex items-center gap-1 text-xs font-mono">
-          {['ALL', 'CRITICAL', 'HIGH', 'MEDIUM', 'LOW'].map((tab) => (
+        <div className="flex items-center gap-1.5 text-xs font-mono flex-wrap">
+          {['ACTION REQUIRED', 'CRITICAL', 'HIGH', 'AUTO-BLOCKED / MITIGATED'].map((tab) => (
             <button
               key={tab}
               onClick={() => setActiveTab(tab)}
-              className={`px-3 py-1.5 rounded-lg font-bold transition-all ${
+              className={`px-3 py-1.5 rounded-lg font-bold transition-all text-xs ${
                 activeTab === tab
-                  ? 'bg-blue-50 text-blue-700 border border-blue-200'
-                  : 'text-slate-600 hover:text-slate-900'
+                  ? tab === 'AUTO-BLOCKED / MITIGATED'
+                    ? 'bg-emerald-50 text-emerald-700 border border-emerald-200'
+                    : 'bg-blue-50 text-blue-700 border border-blue-200'
+                  : 'text-slate-600 hover:text-slate-900 hover:bg-slate-50'
               }`}
             >
-              {tab}
+              {tab === 'AUTO-BLOCKED / MITIGATED' ? `Auto-Mitigated (${autoBlockedCount})` : tab}
             </button>
           ))}
         </div>
 
-        <div className="relative w-full sm:w-64">
-          <Search className="w-3.5 h-3.5 text-slate-400 absolute left-3 top-1/2 -translate-y-1/2" />
-          <input
-            type="text"
-            placeholder="Filter IP or Signature..."
-            value={searchTerm}
-            onChange={(e) => setSearchTerm(e.target.value)}
-            className="w-full pl-8 pr-3 py-1.5 bg-slate-50 border border-slate-200 rounded-xl text-xs font-mono text-slate-800 focus:outline-none focus:border-blue-600"
-          />
+        <div className="flex items-center gap-2 w-full sm:w-auto">
+          <div className="relative w-full sm:w-64">
+            <Search className="w-3.5 h-3.5 text-slate-400 absolute left-3 top-1/2 -translate-y-1/2" />
+            <input
+              type="text"
+              placeholder="Filter IP or Signature..."
+              value={searchTerm}
+              onChange={(e) => setSearchTerm(e.target.value)}
+              className="w-full pl-8 pr-3 py-1.5 bg-slate-50 border border-slate-200 rounded-xl text-xs font-mono text-slate-800 focus:outline-none focus:border-blue-600"
+            />
+          </div>
+          <button
+            onClick={() => loadThreats(true)}
+            className="p-1.5 rounded-xl border border-slate-200 hover:bg-slate-50 text-slate-500 hover:text-slate-900 transition-colors shrink-0"
+            title="Refresh Threats"
+          >
+            <RefreshCw className="w-3.5 h-3.5" />
+          </button>
         </div>
       </div>
 
       {/* Incident Ledger Table */}
       <div className="soc-card rounded-2xl p-5 bg-white border border-slate-200">
         <div className="flex items-center justify-between pb-3 border-b border-slate-100 mb-3">
-          <h3 className="text-xs font-bold uppercase tracking-wider text-slate-900 font-mono">
-            Intercepted Threat Events ({filteredThreats.length})
-          </h3>
-          <button
-            onClick={loadThreats}
-            className="px-2.5 py-1 rounded-lg bg-white border border-slate-200 hover:bg-slate-50 text-slate-700 text-xs font-mono font-semibold transition-all flex items-center gap-1.5 shadow-2xs"
-            title="Refresh Threat Ledger"
-          >
-            <RefreshCw className={`w-3.5 h-3.5 text-blue-600 ${isLoading ? 'animate-spin' : ''}`} />
-            <span>Refresh</span>
-          </button>
+          <div className="flex items-center gap-2">
+            <ShieldAlert className="w-4 h-4 text-rose-600" />
+            <h3 className="text-xs font-bold uppercase tracking-wider text-slate-900 font-mono">
+              {activeTab === 'AUTO-BLOCKED / MITIGATED'
+                ? `Auto-Mitigated Threats Ledger (${filteredThreats.length})`
+                : `Active Threats Requiring Resolution (${filteredThreats.length})`}
+            </h3>
+          </div>
+          <span className="text-[11px] text-slate-400 font-mono">
+            {activeTab === 'AUTO-BLOCKED / MITIGATED'
+              ? 'Handled automatically by background NIPS policy'
+              : 'Requires Operator Discretion & Drop Enforcement'}
+          </span>
         </div>
 
         <div className="overflow-x-auto">
-          <table className="w-full text-left text-xs font-mono border-collapse">
+          <table className="w-full text-left text-xs font-mono">
             <thead>
-              <tr className="bg-slate-50 border-b border-slate-200 text-slate-500 uppercase text-[10px]">
-                <th className="py-2.5 px-3">Event ID</th>
-                <th className="py-2.5 px-3">Timestamp</th>
-                <th className="py-2.5 px-3">Attacker IP</th>
-                <th className="py-2.5 px-3">Target IP:Port</th>
-                <th className="py-2.5 px-3">Signature Description</th>
-                <th className="py-2.5 px-3">Severity</th>
-                <th className="py-2.5 px-3">Risk Score</th>
-                <th className="py-2.5 px-3 text-right">Actions</th>
+              <tr className="border-b border-slate-200 text-slate-400">
+                <th className="py-2.5 px-3 font-semibold">Timestamp</th>
+                <th className="py-2.5 px-3 font-semibold">Attacker IP</th>
+                <th className="py-2.5 px-3 font-semibold">Target Port</th>
+                <th className="py-2.5 px-3 font-semibold">Signature / Category</th>
+                <th className="py-2.5 px-3 font-semibold">Severity</th>
+                <th className="py-2.5 px-3 font-semibold">Risk Score</th>
+                <th className="py-2.5 px-3 font-semibold text-right">Actions</th>
               </tr>
             </thead>
-            <tbody className="divide-y divide-slate-100 text-slate-700">
-              {filteredThreats.length === 0 ? (
+            <tbody className="divide-y divide-slate-100">
+              {isLoading ? (
                 <tr>
-                  <td colSpan={8} className="py-12 text-center text-slate-400 font-mono">
-                    No threat signature records found matching filter.
+                  <td colSpan="7" className="py-12 text-center text-slate-400 font-mono">
+                    <Loader2 className="w-5 h-5 animate-spin mx-auto mb-2 text-blue-600" />
+                    Synchronizing threat ledger...
+                  </td>
+                </tr>
+              ) : filteredThreats.length === 0 ? (
+                <tr>
+                  <td colSpan="7" className="py-12 text-center text-slate-400 font-mono">
+                    <CheckCircle2 className="w-6 h-6 mx-auto mb-2 text-emerald-500" />
+                    {activeTab === 'AUTO-BLOCKED / MITIGATED'
+                      ? 'No auto-mitigated threats in recent capture session.'
+                      : 'No active threats requiring manual action. Network perimeter secure.'}
                   </td>
                 </tr>
               ) : (
-                filteredThreats.map((threat) => (
-                  <tr key={threat.id || `${threat.src_ip}-${threat.timestamp}`} className="hover:bg-slate-50 transition-colors">
-                    <td className="py-2.5 px-3 font-bold text-slate-400">#{threat.id || 'N/A'}</td>
-                    <td className="py-2.5 px-3 text-slate-500">
-                      {threat.timestamp ? new Date(threat.timestamp).toLocaleTimeString() : 'Now'}
-                    </td>
-                    <td className="py-2.5 px-3 font-bold text-rose-600">{threat.src_ip}</td>
-                    <td className="py-2.5 px-3 text-slate-800">
-                      {threat.dst_ip}:{threat.dst_port || 'n/a'}
-                    </td>
-                    <td className="py-2.5 px-3 font-semibold text-slate-900">
-                      {threat.threat_type || 'Malicious Payload Match'}
-                    </td>
-                    <td className="py-2.5 px-3">
-                      <span className="px-2 py-0.5 rounded text-[10px] font-bold uppercase bg-rose-100 text-rose-800 border border-rose-200">
-                        {threat.severity || 'Critical'}
-                      </span>
-                    </td>
-                    <td className="py-2.5 px-3">
-                      {threat.risk_score !== undefined && threat.risk_score !== null ? (
+                filteredThreats.map((threat) => {
+                  const threatKey = threat.id || `${threat.src_ip}-${threat.timestamp}`;
+                  const isAutoMitigated = canBeAutoBlocked(threat);
+                  const isResolvingThis = resolvingId === threatKey;
+
+                  return (
+                    <tr key={threatKey} className="hover:bg-slate-50/80 transition-colors">
+                      <td className="py-2.5 px-3 text-slate-500 whitespace-nowrap">
+                        {threat.timestamp ? new Date(threat.timestamp).toLocaleTimeString() : 'Recent'}
+                      </td>
+                      <td className="py-2.5 px-3 font-bold text-slate-900 whitespace-nowrap">
+                        {threat.src_ip || 'Unknown IP'}
+                      </td>
+                      <td className="py-2.5 px-3 text-slate-600">
+                        {threat.dst_port || '8000'}
+                      </td>
+                      <td className="py-2.5 px-3 text-slate-800 max-w-xs truncate" title={threat.threat_type || threat.attack_category}>
+                        {threat.threat_type || threat.attack_category || 'Exploit Signature Match'}
+                      </td>
+                      <td className="py-2.5 px-3">
                         <span
                           className={`px-2 py-0.5 rounded text-[10px] font-bold border ${
-                            threat.risk_score >= 80
+                            (threat.severity || '').toLowerCase() === 'critical'
                               ? 'bg-rose-50 text-rose-700 border-rose-200'
-                              : threat.risk_score >= 50
+                              : (threat.severity || '').toLowerCase() === 'high'
                               ? 'bg-amber-50 text-amber-700 border-amber-200'
                               : 'bg-blue-50 text-blue-700 border-blue-200'
                           }`}
                         >
-                          {threat.risk_score}/100
+                          {(threat.severity || 'Medium').toUpperCase()}
                         </span>
-                      ) : (
-                        <span className="px-2 py-0.5 rounded text-[10px] font-bold bg-rose-50 text-rose-700 border border-rose-200">
-                          85/100 (High)
-                        </span>
-                      )}
-                    </td>
-                    <td className="py-2.5 px-3 text-right space-x-2">
-                      {!isEmployee && threat.src_ip && (
+                      </td>
+                      <td className="py-2.5 px-3">
+                        {threat.risk_score !== undefined && threat.risk_score !== null ? (
+                          <span
+                            className={`px-2 py-0.5 rounded text-[10px] font-bold border ${
+                              threat.risk_score >= 80
+                                ? 'bg-rose-50 text-rose-700 border-rose-200'
+                                : threat.risk_score >= 50
+                                ? 'bg-amber-50 text-amber-700 border-amber-200'
+                                : 'bg-blue-50 text-blue-700 border-blue-200'
+                            }`}
+                          >
+                            {threat.risk_score}/100
+                          </span>
+                        ) : (
+                          <span className="px-2 py-0.5 rounded text-[10px] font-bold bg-rose-50 text-rose-700 border border-rose-200">
+                            85/100 (High)
+                          </span>
+                        )}
+                      </td>
+                      <td className="py-2.5 px-3 text-right space-x-2 whitespace-nowrap">
+                        {!isEmployee && threat.src_ip && !isAutoMitigated && (
+                          <button
+                            onClick={() => handleResolveThreat(threat)}
+                            disabled={isResolvingThis}
+                            className="px-2.5 py-1 rounded text-[11px] font-bold bg-rose-600 hover:bg-rose-500 disabled:opacity-60 text-white transition-all shadow-2xs inline-flex items-center gap-1.5"
+                          >
+                            {isResolvingThis ? (
+                              <>
+                                <Loader2 className="w-3.5 h-3.5 animate-spin" />
+                                <span>Mitigating...</span>
+                              </>
+                            ) : (
+                              <>
+                                <ShieldAlert className="w-3.5 h-3.5" />
+                                <span>Resolve &amp; Block</span>
+                              </>
+                            )}
+                          </button>
+                        )}
+                        {!isEmployee && isAutoMitigated && (
+                          <span className="px-2.5 py-1 rounded text-[10px] font-bold bg-emerald-50 text-emerald-700 border border-emerald-200 inline-flex items-center gap-1">
+                            <ShieldCheck className="w-3 h-3 text-emerald-600" />
+                            <span>Auto-Mitigated</span>
+                          </span>
+                        )}
                         <button
-                          onClick={() => handleResolveThreat(threat)}
-                          className="px-2.5 py-1 rounded text-[11px] font-bold bg-rose-600 hover:bg-rose-500 text-white transition-all shadow-2xs"
+                          onClick={() => setSelectedPacket(threat.packet || threat)}
+                          className="px-2.5 py-1 rounded text-[11px] font-bold bg-white hover:bg-slate-100 border border-slate-200 text-slate-700 transition-all shadow-2xs"
                         >
-                          Resolve &amp; Block
+                          Inspect
                         </button>
-                      )}
-                      <button
-                        onClick={() => setSelectedPacket(threat.packet || threat)}
-                        className="px-2.5 py-1 rounded text-[11px] font-bold bg-white hover:bg-slate-100 border border-slate-200 text-slate-700 transition-all shadow-2xs"
-                      >
-                        Inspect
-                      </button>
-                    </td>
-                  </tr>
-                ))
+                      </td>
+                    </tr>
+                  );
+                })
               )}
             </tbody>
           </table>

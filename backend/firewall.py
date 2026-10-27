@@ -109,8 +109,8 @@ def block_ip(
     blocked_by: str = "AUTOMATED_NIPS",
     db: Optional[Session] = None
 ) -> Dict[str, Any]:
-    # Safeguard loopback addresses to avoid severing local development IPC
-    if ip in ("127.0.0.1", "localhost", "0.0.0.0") or ip.startswith("127."):
+    # Safeguard loopback addresses and invalid targets to avoid severing local development IPC
+    if not ip or ip in ("127.0.0.1", "localhost", "0.0.0.0", "Unknown IP") or ip.startswith("127."):
         os_result = {
             "success": True,
             "output": "Rule enforced in NIPS Active Defense Ledger (loopback kernel preserved).",
